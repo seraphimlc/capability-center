@@ -9,6 +9,7 @@ import {
   whitelabelText,
   whitelabelValue,
 } from './domain';
+import { matchesStorePlatform, toolIdSet } from './tool-classify';
 
 test('hold math does not oversell', () => {
   assert.equal(canHold(100, 40, 60), true);
@@ -52,6 +53,15 @@ test('strategy B bills integer credits per thousand tokens', () => {
   assert.equal(modelTurnCredits('B', 0, { total_tokens: 5000 }), 0);
   assert.equal(modelHoldAmount('B', 2, 2048, 0), 6);
   assert.equal(modelHoldAmount('B', 2, 2048, 1500), 8);
+});
+
+test('store platform filter ignores empty platform lists', () => {
+  assert.equal(matchesStorePlatform(['alibaba1688'], 'alibaba1688'), true);
+  assert.equal(matchesStorePlatform(['amazon', 'shopify'], 'alibaba1688'), false);
+  assert.equal(matchesStorePlatform([], 'alibaba1688'), false);
+  assert.equal(matchesStorePlatform(null, 'amazon'), false);
+  assert.deepEqual(toolIdSet([]), ['__none__']);
+  assert.deepEqual(toolIdSet(['tool_1']), ['tool_1']);
 });
 
 test('oss prefix rejects foreign product roots', () => {

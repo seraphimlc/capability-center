@@ -266,6 +266,8 @@ docker compose exec api node dist/scripts/reseed-agent-prompts.js
 
 从店铺工作台点「开始会话」会带上 `store_id`。会话里需绑店的技能如果没写店铺，默认用这家店。换店前由提示词要求先问用户。
 
+店铺列表 `/stores` 只放卡片（一行两张，`sm:grid-cols-2`），动作为进入工作台、校验、断开、删除。对接表单在 `/stores/new`，保存后进入该店工作台。工作台能力按 `for_store_platform` 过滤：只返回 `platforms_json` 含该平台 id 的工具，平台列表为空的需绑店工具不会混进来；没有命中时用哨兵 id，避免变成全量列表。
+
 上下文窗口（`chat-context.ts`）：
 
 - 预算默认 **10000 估算 token**。估算方式是 2 个字符算 1 token，落在 8k–12k 的目标带里，对中文偏保守。

@@ -5,7 +5,7 @@ import { PrismaService } from './prisma.service';
 import { ApiException } from './errors';
 import { AuthUser, CurrentUser } from './auth.guard';
 import { pageArgs, whitelabelValue } from './domain';
-import { asPlatforms } from './tool-classify';
+import { asPlatforms, toolIdSet } from './tool-classify';
 
 @Controller()
 export class CatalogController {
@@ -52,37 +52,25 @@ export class CatalogController {
       where.id = { in: favs.map((row) => row.toolId) };
     }
 
-    const platformFilter = (platform || forStorePlatform || '').trim();
+    const platformFilter = (forStorePlatform || platform || '').trim();
     if (platformFilter) {
-      const matched = await this.prisma.$queryRaw<{ id: string }[]>`
-        SELECT id FROM tools
-        WHERE tenant_id = ${user.tenantId}
-          AND status IN ('published', 'deprecated')
-          AND (
-            JSON_CONTAINS(platforms_json, ${JSON.stringify(platformFilter)})
-            OR (
-              store_bound = 1
-              AND (
-                platforms_json IS NULL
-                OR platforms_json = CAST('[]' AS JSON)
-                OR JSON_LENGTH(platforms_json) = 0
-              )
-            )
-          )
-      `;
-      const ids = matched.map((row) => row.id);
-      where.id = where.id && typeof where.id === 'object' && 'in' in (where.id as object)
-        ? { in: (where.id as { in: string[] }).in.filter((id) => ids.includes(id)) }
-        : { in: ids };
-      // for_store_platform: keep both bound-empty and platform-tagged; plain platform= only tagged
-      if (platform && !forStorePlatform) {
-        const tagged = await this.prisma.$queryRaw<{ id: string }[]>`
-          SELECT id FROM tools
-          WHERE tenant_id = ${user.tenantId}
-            AND status IN ('published', 'deprecated')
-            AND JSON_CONTAINS(platforms_json, ${JSON.stringify(platformFilter)})
-        `;
-        where.id = { in: tagged.map((row) => row.id) };
+      // Both `platform` and `for_store_platform` require platforms_json to contain the id.
+      // Store-bound tools with an empty platform list stay out. An empty match uses a sentinel id.
+      const safeId = /^[a-z0-9_]+$/i.test(platformFilter);
+      const matched = safeId
+        ? await this.prisma.$queryRaw<{ id: string }[]>`
+            SELECT id FROM tools
+            WHERE tenant_id = ${user.tenantId}
+              AND status IN ('published', 'deprecated')
+              AND JSON_CONTAINS(platforms_json, ${JSON.stringify(platformFilter)})
+          `
+        : [];
+      const ids = toolIdSet(matched.map((row) => row.id));
+      if (where.id && typeof where.id === 'object' && 'in' in where.id) {
+        const allowed = new Set((where.id as { in: string[] }).in);
+        where.id = { in: toolIdSet(ids.filter((id) => allowed.has(id))) };
+      } else {
+        where.id = { in: ids };
       }
     }
 
