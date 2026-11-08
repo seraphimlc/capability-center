@@ -345,7 +345,12 @@ export class AgentController {
         });
       } catch (error) {
         const parsed = errorBody(error);
-        send('error', { code: parsed.code, message: parsed.message, request_id: req.requestId });
+        send('error', {
+          code: parsed.code,
+          message: parsed.message,
+          request_id: req.requestId,
+          ...(parsed.details ? { details: parsed.details } : {}),
+        });
         send('done', { finish_reason: 'error' });
       } finally {
         req.off('close', abort);

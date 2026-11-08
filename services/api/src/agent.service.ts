@@ -4,10 +4,11 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from './prisma.service';
 import { RedisService } from './redis.service';
 import { InvokeService } from './invoke.service';
-import { ModelService, type LlmMessage, type LlmToolCall } from './model.service';
+import { ModelService, type LlmMessage, type LlmToolCall, type LlmTurn } from './model.service';
+import { WalletService } from './wallet.service';
 import { ApiException } from './errors';
 import type { AuthUser } from './auth.guard';
-import { JsonSchema, whitelabelText } from './domain';
+import { JsonSchema, modelHoldAmount, modelTurnCredits, whitelabelText } from './domain';
 import { asJson, flag } from './support.service';
 
 type Send = (event: string, data: unknown) => void;
@@ -21,12 +22,13 @@ export class AgentService {
     private readonly redis: RedisService,
     private readonly invoke: InvokeService,
     private readonly models: ModelService,
+    private readonly wallet: WalletService,
   ) {}
 
   async begin(user: AuthUser, id: string) {
     const conversation = await this.owned(user, id);
-    const locked = await this.redis.client.set(`lock:conv:${id}`, '1', 'EX', 180, 'NX');
-    if (locked !== 'OK') throw new ApiException('CONFLICT', '会话正在生成，请稍后再试');
+    const acquired = await this.acquireConversation(id);
+    if (!acquired) throw new ApiException('CONFLICT', '会话正在生成，请稍后再试');
     const controller = new AbortController();
     this.runs.set(id, controller);
     await this.redis.client.del(`stop:${id}`);
@@ -40,8 +42,9 @@ export class AgentService {
 
   async stop(user: AuthUser, id: string) {
     await this.owned(user, id);
-    this.runs.get(id)?.abort();
+    // Flag first so a replacement turn waits out this one instead of inheriting the stop.
     await this.redis.client.set(`stop:${id}`, '1', 'EX', 30);
+    this.runs.get(id)?.abort();
     return { stopping: true };
   }
 
@@ -102,34 +105,43 @@ export class AgentService {
         input.send('done', { finish_reason: 'cancelled', version: await this.bump(conversation.id) });
         return;
       }
-      const turn = await this.models.runTurn({
-        messages,
-        tools: llmTools,
-        primaryModelId: agent.primaryModelId,
-        backupModelId: agent.backupModelId,
-        showThinking: conversation.showThinking,
-        signal: input.signal,
-        onDelta: (chunk) => {
-          if (chunk.type === 'text') produced += chunk.text;
-          input.send(chunk.type === 'thinking' ? 'thinking' : 'delta', { text: chunk.text });
-        },
-        userId: input.user.id,
-        tenantId: input.user.tenantId,
-      });
+      const bizId = `${userMessage.id}:${rounds}`;
+      const reservation = await this.reserveModelTurn(input.user, agent, bizId, messages);
+      let turn: LlmTurn;
+      try {
+        turn = await this.models.runTurn({
+          messages,
+          tools: llmTools,
+          primaryModelId: agent.primaryModelId,
+          backupModelId: agent.backupModelId,
+          showThinking: conversation.showThinking,
+          signal: input.signal,
+          onDelta: (chunk) => {
+            if (chunk.type === 'text') produced += chunk.text;
+            input.send(chunk.type === 'thinking' ? 'thinking' : 'delta', { text: chunk.text });
+          },
+          userId: input.user.id,
+          tenantId: input.user.tenantId,
+        });
+      } catch (error) {
+        await this.releaseModelHold(reservation.holdKey);
+        throw error;
+      }
       if (turn.degraded) {
         degraded = true;
         input.send('notice', { code: 'MODEL_DEGRADED', message: '已切换备用模型' });
       }
       if (turn.aborted || (await this.stopped(conversation.id, input.signal))) {
+        await this.releaseModelHold(reservation.holdKey);
         await this.saveAssistant(conversation.id, produced || turn.text, 'stopped', null);
         input.send('done', { finish_reason: 'cancelled', version: await this.bump(conversation.id) });
         return;
       }
+      await this.maybeBillModel(input.user, turn.modelId, bizId, input.requestId, turn.usage, reservation.holdKey);
       if (!turn.toolCalls.length) {
         if ((produced || turn.text).trim()) {
           await this.saveAssistant(conversation.id, produced || turn.text, 'complete', null);
         }
-        await this.maybeBillModel(input.user, agent.primaryModelId, userMessage.id, input.requestId);
         input.send('done', {
           finish_reason: 'stop',
           version: await this.bump(conversation.id),
@@ -371,16 +383,90 @@ export class AgentService {
     return (await this.redis.client.get(`stop:${id}`)) === '1';
   }
 
-  private async maybeBillModel(user: AuthUser, modelId: string | null, bizId: string, requestId: string) {
+  /**
+   * Bill one completed model call.
+   *
+   * Default (flag `billing_strategy` missing or `A`): when `priceCredits > 0`,
+   * capture that many CNY integer credits once per completed call. Strategy `B`
+   * charges `priceCredits` per 1,000 tokens (rounded up) from `LlmTurn.usage`,
+   * and falls back to one unit when usage is missing. A zero price is free.
+   * The pre-call hold is released on abort or error. Ledger `bizType` is
+   * `model`; tool invokes stay `invoke`.
+   */
+  private async maybeBillModel(
+    _user: AuthUser,
+    modelId: string | null,
+    bizId: string,
+    requestId: string,
+    usage: LlmTurn['usage'],
+    holdKey: string,
+  ) {
+    try {
+      const strategy = await flag(this.prisma, 'billing_strategy', 'A');
+      if (!modelId) {
+        await this.releaseModelHold(holdKey);
+        return;
+      }
+      const model = await this.prisma.aiModel.findUnique({ where: { id: modelId } });
+      const amount = modelTurnCredits(strategy, model?.priceCredits ?? 0, usage);
+      if (!holdKey || amount <= 0) {
+        await this.releaseModelHold(holdKey);
+        return;
+      }
+      const tokens = usage?.total_tokens || (usage ? usage.prompt_tokens + usage.completion_tokens : 0);
+      await this.wallet.captureKeyed({
+        holdKey,
+        amount,
+        bizType: 'model',
+        bizId,
+        requestId,
+        note: tokens > 0 ? `对话模型扣减 ${tokens} tokens` : '对话模型扣减',
+      });
+    } catch (error) {
+      await this.releaseModelHold(holdKey);
+      throw error;
+    }
+  }
+
+  private async reserveModelTurn(
+    user: AuthUser,
+    agent: { primaryModelId: string | null; backupModelId: string | null },
+    bizId: string,
+    messages: LlmMessage[],
+  ): Promise<{ holdKey: string }> {
     const strategy = await flag(this.prisma, 'billing_strategy', 'A');
-    if (strategy !== 'B' || !modelId) return;
-    const model = await this.prisma.aiModel.findUnique({ where: { id: modelId } });
-    if (!model || model.priceCredits <= 0) return;
-    const { WalletService } = await import('./wallet.service');
-    void WalletService;
-    void user;
-    void bizId;
-    void requestId;
+    const primary = agent.primaryModelId
+      ? await this.prisma.aiModel.findFirst({ where: { id: agent.primaryModelId, status: 'active' } })
+      : await this.prisma.aiModel.findFirst({
+          where: { tenantId: user.tenantId, capability: 'chat', status: 'active' },
+        });
+    const backup = agent.backupModelId
+      ? await this.prisma.aiModel.findFirst({ where: { id: agent.backupModelId, status: 'active' } })
+      : null;
+    const promptChars = messages.reduce((sum, message) => sum + (message.content?.length || 0), 0);
+    const estimate = Math.max(
+      modelHoldAmount(strategy, primary?.priceCredits ?? 0, primary?.maxTokens, promptChars),
+      modelHoldAmount(strategy, backup?.priceCredits ?? 0, backup?.maxTokens, promptChars),
+    );
+    if (estimate <= 0) return { holdKey: '' };
+    const holdKey = `model:${bizId}`;
+    await this.wallet.holdKeyed(user.id, holdKey, estimate);
+    return { holdKey };
+  }
+
+  private async releaseModelHold(holdKey: string): Promise<void> {
+    await this.wallet.releaseKeyed(holdKey);
+  }
+
+  private async acquireConversation(id: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const locked = await this.redis.client.set(`lock:conv:${id}`, '1', 'EX', 180, 'NX');
+      if (locked === 'OK') return true;
+      const stopping = (await this.redis.client.get(`stop:${id}`)) === '1';
+      if (!stopping) return false;
+      await delay(100);
+    }
+    return false;
   }
 }
 
@@ -434,6 +520,10 @@ function fillFiles(args: Record<string, unknown>, schema: JsonSchema, attachment
 
 function isBlocked(content: string): boolean {
   return content.includes('[[blocked]]');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function toMessage(row: {

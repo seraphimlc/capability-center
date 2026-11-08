@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { api, getToken, readSse, setToken, uploadFile } from '../../../lib/api';
 
 type Skill = { tool_id: string; key: string; name: string; summary: string; pricing_credits: number; enabled: boolean };
@@ -17,6 +17,7 @@ type Conversation = {
 };
 type Msg = { id: string; role: string; content: string; status?: string; tool_call?: { call_id?: string; tool_key?: string; tool_name?: string; ok?: boolean } | null };
 type ToolCard = { call_id: string; tool_key: string; tool_name?: string; args?: unknown; status: string; summary?: string };
+type Draft = { content: string; file: string };
 
 export default function ChatPage() {
   const params = useParams<{ id: string }>();
@@ -29,16 +30,27 @@ export default function ChatPage() {
   const [cards, setCards] = useState<ToolCard[]>([]);
   const [pending, setPending] = useState<ToolCard | null>(null);
   const [busy, setBusy] = useState(false);
+  const [handoff, setHandoff] = useState(false);
   const [error, setError] = useState('');
   const [fileId, setFileId] = useState('');
   const box = useRef<HTMLDivElement>(null);
+  const composing = useRef(false);
+  const abortRef = useRef<AbortController | null>(null);
+  const inflightRef = useRef<Promise<void> | null>(null);
+  const queuedRef = useRef<Draft | null>(null);
+  const pumpingRef = useRef(false);
+  const needsStopRef = useRef(false);
+  const epochRef = useRef(0);
+  const conversationIdRef = useRef(params.id);
+  conversationIdRef.current = params.id;
 
-  async function load() {
+  async function load(id = params.id) {
     const [detail, list, history] = await Promise.all([
-      api<Conversation>(`/api/www/conversations/${params.id}`),
+      api<Conversation>(`/api/www/conversations/${id}`),
       api<{ items: { id: string; title: string; agent_name?: string }[] }>('/api/www/conversations'),
-      api<{ items: Msg[] }>(`/api/www/conversations/${params.id}/messages`),
+      api<{ items: Msg[] }>(`/api/www/conversations/${id}/messages`),
     ]);
+    if (conversationIdRef.current !== id) return;
     setConv(detail);
     setSessions(list.items);
     setMessages(history.items);
@@ -46,6 +58,11 @@ export default function ChatPage() {
 
   useEffect(() => {
     load().catch((err) => setError(err.message));
+    return () => {
+      epochRef.current += 1;
+      queuedRef.current = null;
+      abortRef.current?.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
 
@@ -53,62 +70,164 @@ export default function ChatPage() {
     box.current?.scrollTo({ top: box.current.scrollHeight });
   }, [messages, live, cards]);
 
-  async function send(content: string) {
-    if (!content.trim() && !fileId) return;
+  function restoreDraft(draft: Draft) {
+    setText((current) => current || draft.content);
+    if (draft.file) setFileId((current) => current || draft.file);
+  }
+
+  async function stopServer() {
+    try {
+      await api(`/api/www/conversations/${params.id}/stop`, { method: 'POST' });
+    } catch {
+      // The turn may already have finished.
+    }
+  }
+
+  async function stopOnly() {
+    epochRef.current += 1;
+    const pending = queuedRef.current;
+    queuedRef.current = null;
+    needsStopRef.current = false;
+    if (pending) restoreDraft(pending);
+    abortRef.current?.abort();
+    setLive('');
+    setHandoff(false);
+    await stopServer();
+  }
+
+  function enqueue(draft: Draft) {
+    queuedRef.current = draft;
+    if (abortRef.current || inflightRef.current) {
+      needsStopRef.current = true;
+      setHandoff(true);
+      setLive('');
+      abortRef.current?.abort();
+    }
+    if (!pumpingRef.current) void pump();
+  }
+
+  // Latest unsent draft wins. A new send stops the active stream, then posts.
+  // It does not wait for the previous reply to finish, and it does not keep a backlog.
+  async function pump() {
+    if (pumpingRef.current) return;
+    pumpingRef.current = true;
+    const ticket = epochRef.current;
     setBusy(true);
+    try {
+      while (epochRef.current === ticket) {
+        const next = queuedRef.current;
+        if (!next) break;
+        queuedRef.current = null;
+        if (needsStopRef.current || inflightRef.current) {
+          needsStopRef.current = false;
+          setHandoff(true);
+          abortRef.current?.abort();
+          await stopServer();
+          if (inflightRef.current) await inflightRef.current;
+          if (epochRef.current !== ticket) {
+            if (!queuedRef.current) restoreDraft(next);
+            break;
+          }
+          if (queuedRef.current) continue;
+          setHandoff(false);
+        }
+        const task = performSend(next.content, next.file, ticket);
+        inflightRef.current = task;
+        try {
+          await task;
+        } finally {
+          if (inflightRef.current === task) inflightRef.current = null;
+        }
+      }
+    } finally {
+      pumpingRef.current = false;
+      setHandoff(false);
+      if (queuedRef.current) void pump();
+      else setBusy(false);
+    }
+  }
+
+  function send(content: string) {
+    const trimmed = content.trim();
+    const file = fileId;
+    if (!trimmed && !file) return;
+    setText('');
+    setFileId('');
     setError('');
+    enqueue({ content: trimmed, file });
+  }
+
+  async function performSend(content: string, file: string, ticket: number) {
+    const id = params.id;
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLive('');
     setThinking('');
     setCards([]);
     setPending(null);
-    setMessages((rows) => [...rows, { id: `local-${Date.now()}`, role: 'user', content }]);
-    setText('');
-    const response = await fetch(`/api/www/conversations/${params.id}/chat`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() || ''}`, Accept: 'text/event-stream' },
-      body: JSON.stringify({ content, attachments: fileId ? [fileId] : [] }),
-    });
-    if (response.status === 401) {
-      const refreshed = await fetch('/api/www/auth/refresh', { method: 'POST', credentials: 'include' });
-      const body = await refreshed.json().catch(() => null);
-      if (body?.data?.access_token) setToken(body.data.access_token);
-      setError('登录已过期，请重试发送');
-      setBusy(false);
-      return;
+    setMessages((rows) => [...rows, { id: `local-${Date.now()}`, role: 'user', content: content || '（附件）' }]);
+    try {
+      const response = await postChat(id, content, file, controller.signal);
+      if (epochRef.current !== ticket) return;
+      if (response.status === 401) {
+        const refreshed = await fetch('/api/www/auth/refresh', { method: 'POST', credentials: 'include' });
+        const body = await refreshed.json().catch(() => null);
+        if (body?.data?.access_token) setToken(body.data.access_token);
+        setError('登录已过期，请重试发送');
+        return;
+      }
+      if (!response.ok || !response.body) {
+        const body = await response.json().catch(() => ({}));
+        setError(formatChatError(body?.error || {}, '发送失败'));
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (!controller.signal.aborted && epochRef.current === ticket) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        buf = readSse(buf, (event, data) => {
+          if (epochRef.current !== ticket) return;
+          if (event === 'delta') setLive((value) => value + String(data.text || ''));
+          if (event === 'thinking') setThinking((value) => value + String(data.text || ''));
+          if (event === 'tool_call') {
+            setCards((rows) => [...rows, { call_id: String(data.call_id), tool_key: String(data.tool_key), tool_name: String(data.tool_name || data.tool_key), args: data.args, status: 'running' }]);
+          }
+          if (event === 'tool_result') {
+            setCards((rows) => rows.map((row) => (row.call_id === data.call_id ? { ...row, status: data.ok ? 'success' : 'failed', summary: String(data.summary || '') } : row)));
+          }
+          if (event === 'tool_confirm_required') {
+            setPending({ call_id: String(data.call_id), tool_key: String(data.tool_key), tool_name: String(data.tool_name || ''), args: data.args, status: 'confirm' });
+          }
+          if (event === 'error') setError(formatChatError(data, '生成失败'));
+          if (event === 'notice') setError(String(data.message || ''));
+        });
+      }
+      if (controller.signal.aborted || epochRef.current !== ticket) {
+        await reader.cancel().catch(() => undefined);
+      }
+    } catch (error) {
+      if (!isAbort(error) && epochRef.current === ticket) {
+        setError(error instanceof Error ? error.message : '发送失败');
+      }
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      // A newer draft is about to post; let that turn refresh history.
+      if (!queuedRef.current && conversationIdRef.current === id) {
+        setLive('');
+        await load(id).catch(() => undefined);
+      }
     }
-    if (!response.ok || !response.body) {
-      const body = await response.json().catch(() => ({}));
-      setError(body?.error?.message || '发送失败');
-      setBusy(false);
-      return;
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      buf = readSse(buf, (event, data) => {
-        if (event === 'delta') setLive((value) => value + String(data.text || ''));
-        if (event === 'thinking') setThinking((value) => value + String(data.text || ''));
-        if (event === 'tool_call') {
-          setCards((rows) => [...rows, { call_id: String(data.call_id), tool_key: String(data.tool_key), tool_name: String(data.tool_name || data.tool_key), args: data.args, status: 'running' }]);
-        }
-        if (event === 'tool_result') {
-          setCards((rows) => rows.map((row) => (row.call_id === data.call_id ? { ...row, status: data.ok ? 'success' : 'failed', summary: String(data.summary || '') } : row)));
-        }
-        if (event === 'tool_confirm_required') {
-          setPending({ call_id: String(data.call_id), tool_key: String(data.tool_key), tool_name: String(data.tool_name || ''), args: data.args, status: 'confirm' });
-        }
-        if (event === 'error') setError(String(data.message || '生成失败'));
-        if (event === 'notice') setError(String(data.message || ''));
-      });
-    }
-    setFileId('');
-    setBusy(false);
-    await load().catch(() => undefined);
-    setLive('');
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey) return;
+    const native = event.nativeEvent;
+    if (composing.current || native.isComposing || native.keyCode === 229) return;
+    event.preventDefault();
+    send(text);
   }
 
   async function patch(path: string, body: unknown) {
@@ -142,7 +261,7 @@ export default function ChatPage() {
             <h1 className="font-medium">{conv.agent?.name}</h1>
             <p className="text-xs text-ink/50">{conv.agent?.model_tier}{conv.agent?.unbound ? ' · 当前助手未绑定技能，仅支持对话' : ''}</p>
           </div>
-          <button className="btn btn-ghost" disabled={!busy} onClick={() => api(`/api/www/conversations/${conv.id}/stop`, { method: 'POST' })}>停止生成</button>
+          <button className="btn btn-ghost" disabled={!busy} onClick={() => { void stopOnly(); }}>停止生成</button>
         </header>
         <div ref={box} className="flex-1 space-y-3 overflow-auto px-4 py-4">
           {messages.length === 0 && !live ? (
@@ -150,7 +269,7 @@ export default function ChatPage() {
               <p className="text-sm text-ink/60">可以点一条建议开始。</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 {(conv.agent?.suggestions || []).map((prompt) => (
-                  <button key={prompt} className="btn btn-ghost" onClick={() => send(prompt)}>{prompt}</button>
+                  <button key={prompt} className="btn btn-ghost" type="button" onClick={() => send(prompt)}>{prompt}</button>
                 ))}
               </div>
             </div>
@@ -163,6 +282,7 @@ export default function ChatPage() {
               ) : null}
             </div>
           ))}
+          {busy ? <p className="text-xs text-ink/50">{handoff ? '正在停止上一条回复…' : '正在生成…'}</p> : null}
           {thinking && conv.show_thinking ? <p className="text-xs text-ink/40">思考：{thinking}</p> : null}
           {live ? <p className="mr-8 whitespace-pre-wrap text-sm">{live}</p> : null}
           {cards.map((card) => (
@@ -184,8 +304,16 @@ export default function ChatPage() {
           ) : null}
           {error ? <p className="text-sm text-clay">{error}</p> : null}
         </div>
-        <form className="border-t border-line p-3" onSubmit={(event: FormEvent) => { event.preventDefault(); void send(text); }}>
-          <textarea className="field min-h-20" placeholder="输入消息" value={text} onChange={(event) => setText(event.target.value)} />
+        <form className="border-t border-line p-3" onSubmit={(event: FormEvent) => { event.preventDefault(); send(text); }}>
+          <textarea
+            className="field min-h-20"
+            placeholder="Enter 发送 · Shift+Enter 换行"
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onCompositionStart={() => { composing.current = true; }}
+            onCompositionEnd={() => { window.setTimeout(() => { composing.current = false; }, 0); }}
+            onKeyDown={onComposerKeyDown}
+          />
           <div className="mt-2 flex items-center justify-between gap-2">
             <label className="text-xs text-ink/60">
               图片
@@ -196,7 +324,7 @@ export default function ChatPage() {
               }} />
               {fileId ? <span className="ml-2 text-moss">已附加</span> : null}
             </label>
-            <button className="btn btn-primary" disabled={busy}>发送</button>
+            <button className="btn btn-primary" type="submit" disabled={!text.trim() && !fileId}>发送</button>
           </div>
         </form>
       </section>
@@ -243,4 +371,41 @@ export default function ChatPage() {
       </aside>
     </div>
   );
+}
+
+function postChat(id: string, content: string, file: string, signal: AbortSignal): Promise<Response> {
+  const sendOnce = () => fetch(`/api/www/conversations/${id}/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${getToken() || ''}`,
+      Accept: 'text/event-stream',
+    },
+    body: JSON.stringify({ content, attachments: file ? [file] : [] }),
+    signal,
+  });
+  return (async () => {
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      if (signal.aborted) throw new DOMException('aborted', 'AbortError');
+      const response = await sendOnce();
+      if (response.status !== 409 || attempt === 5) return response;
+      const body = await response.clone().json().catch(() => null);
+      if (body?.error?.code !== 'CONFLICT') return response;
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    throw new Error('发送失败');
+  })();
+}
+
+function formatChatError(data: { code?: unknown; message?: unknown; details?: unknown }, fallback: string): string {
+  const message = typeof data.message === 'string' && data.message ? data.message : fallback;
+  if (data.code !== 'INSUFFICIENT_CREDITS') return message;
+  const details = data.details as { balance?: number; required?: number } | undefined;
+  if (!details || typeof details.required !== 'number') return message;
+  const balance = typeof details.balance === 'number' ? details.balance : 0;
+  return `${message}（需要 ${details.required} 积分，当前可用 ${balance}）`;
+}
+
+function isAbort(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
 }

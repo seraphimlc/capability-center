@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertSafePrefix, canHold, containsBannedBrand, whitelabelText, whitelabelValue } from './domain';
+import {
+  assertSafePrefix,
+  canHold,
+  containsBannedBrand,
+  modelHoldAmount,
+  modelTurnCredits,
+  whitelabelText,
+  whitelabelValue,
+} from './domain';
 
 test('hold math does not oversell', () => {
   assert.equal(canHold(100, 40, 60), true);
@@ -24,6 +32,26 @@ test('whitelabel drops branded keys', () => {
   }) as Record<string, unknown>;
   assert.equal(cleaned.upstream_model, undefined);
   assert.equal(containsBannedBrand(JSON.stringify(cleaned)), false);
+});
+
+test('strategy A charges a flat per-call price when the model is billable', () => {
+  assert.equal(modelTurnCredits('A', 3, { total_tokens: 50 }), 3);
+  assert.equal(modelTurnCredits(undefined, 3, null), 3);
+  assert.equal(modelTurnCredits('', 4, { total_tokens: 9000 }), 4);
+  assert.equal(modelTurnCredits('A', 0, { total_tokens: 9000 }), 0);
+  assert.equal(modelTurnCredits('A', 2.9, { total_tokens: 1 }), 2);
+  assert.equal(modelHoldAmount('A', 3, 2048, 8000), 3);
+});
+
+test('strategy B bills integer credits per thousand tokens', () => {
+  assert.equal(modelTurnCredits('B', 2, { total_tokens: 1 }), 2);
+  assert.equal(modelTurnCredits('b', 2, { total_tokens: 1000 }), 2);
+  assert.equal(modelTurnCredits('B', 2, { total_tokens: 1001 }), 4);
+  assert.equal(modelTurnCredits('B', 2, { prompt_tokens: 800, completion_tokens: 300 }), 4);
+  assert.equal(modelTurnCredits('B', 2, null), 2);
+  assert.equal(modelTurnCredits('B', 0, { total_tokens: 5000 }), 0);
+  assert.equal(modelHoldAmount('B', 2, 2048, 0), 6);
+  assert.equal(modelHoldAmount('B', 2, 2048, 1500), 8);
 });
 
 test('oss prefix rejects foreign product roots', () => {

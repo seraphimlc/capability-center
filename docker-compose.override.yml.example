@@ -1,0 +1,18 @@
+# Docker Desktop for Mac: containers fail TLS to the model gateway
+# (OpenSSL unexpected EOF) even when the host curl/Node succeeds.
+#
+# Copy this file to docker-compose.override.yml (gitignored) and start the
+# host proxy before compose. Do not put API keys here — set LLM_API_KEY or
+# XY_API_KEY in .env only.
+#
+#   node scripts/xy-llm-proxy.mjs
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose up -d
+
+services:
+  api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      LLM_BASE_URL: http://host.docker.internal:18765/v1
+      XY_BASE_URL: http://host.docker.internal:18765/v1

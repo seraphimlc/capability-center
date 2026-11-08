@@ -70,7 +70,9 @@ docker compose up --build
 
 也可使用同义变量 `XY_API_KEY`、`XY_BASE_URL`。ChatHub 临时通道使用 `CHATHUB_BASE_URL`、`CHATHUB_API_KEY`、`CHATHUB_MODEL`，和 XY 分开，不会共用别人的对象前缀。
 
-流式响应经 Nginx 关闭缓冲（`proxy_buffering off`，读超时 3600 秒）。用量以最终 chunk 里的 `usage` 为准；默认计费策略 A 只在技能成功时扣用户积分，对话 token 不扣。
+Docker Desktop for Mac 上，容器直连网关可能 TLS 握手失败（OpenSSL unexpected EOF），宿主机却正常。先在宿主机跑 `node scripts/xy-llm-proxy.mjs`（监听 `:18765`），再把 `docker-compose.override.yml.example` 复制为 `docker-compose.override.yml`。密钥仍然只放 `.env`。
+
+流式响应经 Nginx 关闭缓冲（`proxy_buffering off`，读超时 3600 秒）。用量以最终 chunk 里的 `usage` 为准。模型 `priceCredits > 0` 时对话会扣整数积分：策略 A（默认，flag 缺失也一样）按每次完成的模型调用扣标价；策略 B 按每 1000 token 向上取整。标价为 0 不扣。技能调用仍只在成功时扣价。
 
 用户界面只显示白标档名（标准对话、深度推理等）。上游模型 ID 只在管理端模型页出现。
 

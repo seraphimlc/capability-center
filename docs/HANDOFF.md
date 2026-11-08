@@ -1,6 +1,6 @@
 # 能力中心交接文档（HANDOFF）
 
-更新时间：2026-11-08（Asia/Shanghai）
+更新时间：2026-11-08（Asia/Shanghai，对话发送 / 模型计费 / Mac 网关代理）
 
 ## 1. 仓库与运行入口
 
@@ -40,6 +40,8 @@ docker compose ps
 curl -s http://127.0.0.1:4000/healthz   # 若未暴露主机端口，用：
 docker compose exec api wget -qO- http://127.0.0.1:4000/healthz
 ```
+
+用户端：http://127.0.0.1:8888 。真实模型与 Docker Desktop TLS 桥见第 10 节。密钥只放本机 `.env`。
 
 重建（若 Docker Hub/镜像站拉取 `node:22-alpine` 401，用本机已有镜像做增量构建）：
 
@@ -137,6 +139,9 @@ Agent 表新增 `platforms_json`；`GET /api/www/agents?platform=amazon` 可过�
 - 店铺工作台：`apps/www/src/app/stores/[id]/page.tsx`
 - 助手列表：`apps/www/src/app/agents/page.tsx`
 - 调用：`services/api/src/invoke.service.ts`、`linkfox.client.ts`
+- 对话页：`apps/www/src/app/chat/[id]/page.tsx`
+- 对话与模型计费：`services/api/src/agent.service.ts`、`wallet.service.ts`、`model.service.ts`
+- Mac 网关代理：`scripts/xy-llm-proxy.mjs`、`docker-compose.override.yml.example`
 
 ## 7. 运维备注
 
@@ -189,3 +194,51 @@ docker compose exec api node dist/scripts/seed-platform-agents.js
 - 12 助手可见；`platform=amazon` 返回亚马逊店铺助手
 - 绑店校验生效；builtin 调用 success；stub 调用 degraded 说明性结果
 - 品牌泄漏抽样 0
+
+## 10. 对话发送、模型计费、真实模型
+
+### 输入框
+
+- Enter 发送，Shift+Enter 换行。
+- 中文输入法组合过程中不发送（`isComposing`、`keyCode === 229`，以及 composition 结束当拍的 Enter）。
+- 生成中的状态是「正在生成…」。再按 Enter、点发送，或点建议芯片：先 `POST /api/www/conversations/:id/stop` 停掉当前回复，再发送这一条。不把下一条排到上一条自然结束之后。
+- 「停止生成」只停止，不会把输入框里还没发出的草稿当成新消息。
+- 回复仍是 SSE：`delta` / `thinking` / 工具事件。没有改成整包请求响应。
+- 未配置密钥时 `ModelService` 走本地 mock，mock 仍按片吐字。
+
+### 模型计费
+
+聊天每次完成的模型调用都走 `maybeBillModel`（工具多轮里每一次成功的模型调用各记一笔；中止或失败释放预留，不扣）。
+
+- 积分是人民币口径的整数。流水 `bizType=model`，备注「对话模型扣减」。技能调用仍是 `bizType=invoke`，预留 / 成功实扣 / 失败释放不变。
+- 默认策略 A（`billing_strategy` 为 A 或缺失）：模型 `priceCredits > 0` 时，按该标价扣一次。为 0 不扣。种子数据里的对话模型标价是 0，要在管理端模型页改成大于 0 才会看到扣减。
+- 策略 B：`priceCredits` 是每 1000 token 的积分，按 `usage.total_tokens` 向上取整。没有 usage 时按 1 个单位。调用前按提示词长度和 `maxTokens` 预留，完成后按实际用量实扣。
+- 积分不够时，SSE 的 `error` 事件带 `code=INSUFFICIENT_CREDITS`（以及需要 / 可用积分）。
+
+### 真实模型与 Docker Desktop
+
+浏览器不持有模型密钥。API 在 `LLM_API_KEY` 或 `XY_API_KEY` 有值时，经 `ModelService.runTurn` 以 `stream: true` 请求 OpenAI 兼容的 `/v1/chat/completions`。密钥只放本机 `.env`，不要写进仓库、`docker-compose.override.yml` 或聊天记录。
+
+Docker Desktop for Mac 上，容器直连 `api.xytoken.xyb2b.com` 会 TLS 握手失败（OpenSSL unexpected EOF），宿主机 curl / Node 正常。用宿主机代理把容器里的 HTTP 转到上游 HTTPS：
+
+```bash
+node scripts/xy-llm-proxy.mjs
+cp docker-compose.override.yml.example docker-compose.override.yml
+# .env 中填写 LLM_API_KEY 或 XY_API_KEY，不要写进 override
+docker compose up -d
+```
+
+代理默认听 `0.0.0.0:18765`。override 只做两件事：给 `api` 加上 `host.docker.internal:host-gateway`，并把 `LLM_BASE_URL` / `XY_BASE_URL` 设为 `http://host.docker.internal:18765/v1`。`docker-compose.override.yml` 已 gitignore。不用 Mac Docker 时不要复制这份 override，否则会去连一个没启动的代理。
+
+### 怎样本地确认
+
+```bash
+docker compose up -d
+# http://127.0.0.1:8888 用 demo@visitworlds.me 打开一个助手会话
+```
+
+1. Enter 发出消息；Shift+Enter 只换行；生成过程中能看到「正在生成…」。
+2. 上一条还在吐字时再 Enter：上一条停止，新消息马上开始，不会等上一条说完。
+3. 只点「停止生成」时，当前回复停止，输入框里的草稿还在。
+4. 管理端把对话模型的积分标价改成大于 0，再发一条。钱包流水是 `model` 扣减。再成功调用一个收费技能，流水仍是 `invoke`。
+5. 要走真实模型：按上面的顺序先起代理，再在 `.env` 放密钥，然后重建 / 重启 api。不放密钥时会话仍是 mock 流式回复。

@@ -116,8 +116,134 @@ export class WalletService {
   }
 
   async releaseByInvoke(invokeId: string): Promise<void> {
+    await this.releaseKeyed(invokeId);
+  }
+
+  /**
+   * Reserve credits for a non-invoke biz key (chat model turns use `model:{bizId}`).
+   * Tool invokes keep using `hold` / `captureByInvoke` and are not touched here.
+   */
+  async holdKeyed(userId: string, holdKey: string, amount: number): Promise<void> {
+    if (!holdKey || amount === 0) return;
+    if (!Number.isInteger(amount) || amount < 0) {
+      throw new ApiException('VALIDATION_ERROR', '预留数额必须是非负整数');
+    }
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.creditHold.findUnique({ where: { invokeId: holdKey } });
+      if (existing) return;
+      const wallet = await lockWallet(tx, userId);
+      if (wallet.status !== 'active') throw new ApiException('WALLET_FROZEN');
+      const held = await openHeldTx(tx, wallet.id);
+      if (!canHold(wallet.balance, held, amount)) {
+        throw new ApiException('INSUFFICIENT_CREDITS', undefined, {
+          balance: wallet.balance - held,
+          required: amount,
+        });
+      }
+      await tx.creditHold.create({
+        data: {
+          id: ulid(),
+          walletId: wallet.id,
+          userId,
+          tenantId: wallet.tenant_id,
+          invokeId: holdKey,
+          amount,
+          status: 'open',
+        },
+      });
+    });
+  }
+
+  /**
+   * Capture the actual integer amount (which may be below the reservation) and
+   * write a ledger row. `bizType` must distinguish model chat from tool `invoke`.
+   */
+  async captureKeyed(input: {
+    holdKey: string;
+    amount: number;
+    bizType: string;
+    bizId: string;
+    requestId?: string;
+    note: string;
+  }): Promise<{ captured: boolean; amount: number; balance: number }> {
+    if (!input.holdKey) return { captured: false, amount: 0, balance: 0 };
+    if (!Number.isInteger(input.amount) || input.amount < 0) {
+      throw new ApiException('VALIDATION_ERROR', '扣减数额必须是非负整数');
+    }
+    const result = await this.prisma.$transaction(async (tx) => {
+      const holds = await tx.$queryRaw<HoldRow[]>`
+        SELECT id, wallet_id, user_id, tenant_id, invoke_id, amount, status
+        FROM credit_holds WHERE invoke_id = ${input.holdKey} FOR UPDATE`;
+      const hold = holds[0];
+      const duplicate = await tx.ledgerEntry.findFirst({
+        where: { bizType: input.bizType, bizId: input.bizId },
+      });
+      if (!hold || hold.status !== 'open') {
+        return {
+          captured: false,
+          amount: 0,
+          balance: 0,
+          insufficient: false,
+          missing: !duplicate,
+        };
+      }
+      if (duplicate || input.amount === 0) {
+        await tx.creditHold.update({
+          where: { id: hold.id },
+          data: { status: duplicate ? 'captured' : 'released' },
+        });
+        return { captured: false, amount: 0, balance: 0, insufficient: false, missing: false };
+      }
+      const wallet = await lockWallet(tx, hold.user_id);
+      const otherRows = await tx.$queryRaw<Array<{ total: bigint | number | null }>>`
+        SELECT COALESCE(SUM(amount), 0) AS total FROM credit_holds
+        WHERE wallet_id = ${wallet.id} AND status = 'open' AND id <> ${hold.id}`;
+      const otherHeld = Number(otherRows[0]?.total ?? 0);
+      const available = wallet.balance - otherHeld;
+      if (available < input.amount) {
+        await tx.creditHold.update({ where: { id: hold.id }, data: { status: 'released' } });
+        return {
+          captured: false,
+          amount: 0,
+          balance: available,
+          insufficient: true,
+          missing: false,
+        };
+      }
+      const balance = wallet.balance - input.amount;
+      await tx.wallet.update({ where: { id: wallet.id }, data: { balance } });
+      await tx.creditHold.update({ where: { id: hold.id }, data: { status: 'captured' } });
+      await tx.ledgerEntry.create({
+        data: {
+          id: ulid(),
+          walletId: wallet.id,
+          userId: hold.user_id,
+          tenantId: hold.tenant_id,
+          type: 'consume',
+          amount: -input.amount,
+          balanceAfter: balance,
+          bizType: input.bizType,
+          bizId: input.bizId,
+          note: input.note.slice(0, 500),
+          requestId: input.requestId ?? null,
+        },
+      });
+      return { captured: true, amount: input.amount, balance, insufficient: false, missing: false };
+    });
+    if (result.insufficient) {
+      throw new ApiException('INSUFFICIENT_CREDITS', undefined, {
+        balance: result.balance,
+        required: input.amount,
+      });
+    }
+    if (result.missing) throw new ApiException('HOLD_NOT_FOUND');
+    return { captured: result.captured, amount: result.amount, balance: result.balance };
+  }
+
+  async releaseKeyed(holdKey: string): Promise<void> {
+    if (!holdKey) return;
     await this.prisma.creditHold.updateMany({
-      where: { invokeId, status: 'open' },
+      where: { invokeId: holdKey, status: 'open' },
       data: { status: 'released' },
     });
   }

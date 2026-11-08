@@ -30,7 +30,7 @@ export default function OverviewPage() {
         ))}
       </div>
       <div className="card mt-4 p-4 text-sm leading-7">
-        <p>计费策略 {String(data.billing_strategy)}（A = 只扣技能，对话由平台承担）</p>
+        <p>计费策略 {String(data.billing_strategy)}（A = 对话按次扣积分，B = 按每千 token；标价为 0 不扣）</p>
         <p>模型通道 {llm?.provider} {llm?.has_key ? '已配置密钥' : '未配置密钥，使用本地模拟'}</p>
         <p>对象存储 {oss?.provider} / {oss?.bucket} / 前缀 {oss?.prefix}</p>
         <p>维护模式 {data.maintenance ? '开' : '关'}</p>
