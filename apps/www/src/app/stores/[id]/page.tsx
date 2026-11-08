@@ -159,7 +159,7 @@ export default function StoreWorkspacePage() {
                   onClick={async () => {
                     const created = await api<{ id: string }>('/api/www/conversations', {
                       method: 'POST',
-                      body: JSON.stringify({ agent_key: agent.key }),
+                      body: JSON.stringify({ agent_key: agent.key, store_id: params.id }),
                     });
                     routerPush(`/chat/${created.id}`);
                   }}

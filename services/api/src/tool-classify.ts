@@ -234,6 +234,23 @@ export async function reclassifyAllTools(prisma: PrismaClient, tenantId: string)
   return { counts, bound, unbound, total: tools.length };
 }
 
+/** No real tool id. Used so an empty platform match does not become SQL `IN ()` or an unfiltered list. */
+export const EMPTY_TOOL_ID_SET = ['__none__'] as const;
+
+/**
+ * Store workspace filter: a tool is in a platform only when `platforms_json`
+ * contains that platform id. Store-bound tools with an empty platform list do not match.
+ */
+export function matchesStorePlatform(platforms: unknown, platformId: string): boolean {
+  const id = platformId.trim();
+  if (!id) return false;
+  return asPlatforms(platforms).includes(id);
+}
+
+export function toolIdSet(ids: string[]): string[] {
+  return ids.length ? ids : [...EMPTY_TOOL_ID_SET];
+}
+
 /** Parse platforms_json safely */
 export function asPlatforms(value: unknown): string[] {
   if (Array.isArray(value)) return value.map(String);

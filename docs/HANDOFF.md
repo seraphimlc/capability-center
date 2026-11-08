@@ -1,6 +1,44 @@
 # 能力中心交接文档（HANDOFF）
 
-更新时间：2026-11-08（Asia/Shanghai）
+更新时间：2026-11-08（Asia/Shanghai）。这是下一位接手的入口。
+
+## 0. 下一位先看这里
+
+### 本轮已经做完
+
+- 对话：Enter 发送，Shift+Enter 换行，输入法组合中不发送。生成中再发会先停上一条再发，不排队。
+- 12 个已发布助手是完整中文作业说明，不是一行人设。每轮注入技能、确认方式、默认店铺、上海日期。长会话按约 1 万估算 token 折叠成「会话摘要」。
+- 模型计费：`maybeBillModel` 会预留、实扣、失败释放。流水 `bizType=model`。策略 A（默认）在 `priceCredits > 0` 时按次扣；策略 B 按每 1000 token 向上取整。种子里的对话标价仍是 0，要在管理端改价才会看到扣减。
+- 店铺：`/stores` 只有卡片（`sm:grid-cols-2`）。对接在 `/stores/new`，保存后进工作台。工作台只显示 `platforms_json` 含该平台 id 的能力（1688 店是 `alibaba1688`）。空平台列表的需绑店工具不会混进来。
+- Mac 上容器访问模型网关：宿主机 `node scripts/xy-llm-proxy.mjs`，见第 10 节。
+
+### 明确不做（下一轮）
+
+商品目录和订单管理不做。多平台商品/订单表还没定。见 `docs/DECISIONS.md`。不要在本轮分支上加 SKU 或订单接口。
+
+### 怎么跑
+
+```bash
+cd /Users/liuchang/Desktop/capability-center
+docker compose up -d
+# 用户端 http://127.0.0.1:8888
+# 已有库只刷新助手提示词：
+docker compose exec api node dist/scripts/reseed-agent-prompts.js
+```
+
+演示账号仍可用：`demo@visitworlds.me` / `Demo123456`，运营 `ops@visitworlds.me` / `Ops123456`，超管 `admin@visitworlds.me` / `Admin123456`。
+
+真实模型：密钥只写本机 `.env` 的 `LLM_API_KEY` 或 `XY_API_KEY`。Docker Desktop for Mac 要先起代理再 compose，见第 10 节。不配密钥时是本地 mock 流，页面会提示演示回复。
+
+测试：`pnpm test`。用例表在 `docs/TEST-CASES.md`。
+
+### 已知缺口
+
+1. 镜像站 `docker.m.daocloud.io` 拉 `node:22-alpine` 可能 401，全量 `compose build` 会失败。用第 7 节的增量 Dockerfile，基于本机已有镜像。
+2. 商品目录、订单管理：下一轮，见 `docs/DECISIONS.md`。
+3. 对话模型种子标价是 0。不改管理端标价就看不到模型扣款。
+
+下文是更早的架构和运维细节，仍然有效。
 
 ## 1. 仓库与运行入口
 
@@ -40,6 +78,8 @@ docker compose ps
 curl -s http://127.0.0.1:4000/healthz   # 若未暴露主机端口，用：
 docker compose exec api wget -qO- http://127.0.0.1:4000/healthz
 ```
+
+用户端：http://127.0.0.1:8888 。真实模型与 Docker Desktop TLS 桥见第 10 节。密钥只放本机 `.env`。
 
 重建（若 Docker Hub/镜像站拉取 `node:22-alpine` 401，用本机已有镜像做增量构建）：
 
@@ -137,6 +177,10 @@ Agent 表新增 `platforms_json`；`GET /api/www/agents?platform=amazon` 可过�
 - 店铺工作台：`apps/www/src/app/stores/[id]/page.tsx`
 - 助手列表：`apps/www/src/app/agents/page.tsx`
 - 调用：`services/api/src/invoke.service.ts`、`linkfox.client.ts`
+- 对话页：`apps/www/src/app/chat/[id]/page.tsx`
+- 对话与模型计费：`services/api/src/agent.service.ts`、`wallet.service.ts`、`model.service.ts`
+- 助手提示词与上下文窗口：`services/api/src/agent-prompts.ts`、`chat-context.ts`、`scripts/reseed-agent-prompts.ts`
+- Mac 网关代理：`scripts/xy-llm-proxy.mjs`、`docker-compose.override.yml.example`
 
 ## 7. 运维备注
 
@@ -189,3 +233,90 @@ docker compose exec api node dist/scripts/seed-platform-agents.js
 - 12 助手可见；`platform=amazon` 返回亚马逊店铺助手
 - 绑店校验生效；builtin 调用 success；stub 调用 degraded 说明性结果
 - 品牌泄漏抽样 0
+
+## 10. 对话发送、模型计费、真实模型
+
+### 输入框
+
+- Enter 发送，Shift+Enter 换行。
+- 中文输入法组合过程中不发送（`isComposing`、`keyCode === 229`，以及 composition 结束当拍的 Enter）。
+- 生成中的状态是「正在生成…」。再按 Enter、点发送，或点建议芯片：先 `POST /api/www/conversations/:id/stop` 停掉当前回复，再发送这一条。不把下一条排到上一条自然结束之后。
+- 「停止生成」只停止，不会把输入框里还没发出的草稿当成新消息。
+- 回复仍是 SSE：`delta` / `thinking` / 工具事件。没有改成整包请求响应。
+- 未配置密钥时 `ModelService` 走本地 mock，mock 仍按片吐字。
+
+### 模型计费
+
+聊天每次完成的模型调用都走 `maybeBillModel`（工具多轮里每一次成功的模型调用各记一笔；中止或失败释放预留，不扣）。
+
+- 积分是人民币口径的整数。流水 `bizType=model`，备注「对话模型扣减」。技能调用仍是 `bizType=invoke`，预留 / 成功实扣 / 失败释放不变。
+- 默认策略 A（`billing_strategy` 为 A 或缺失）：模型 `priceCredits > 0` 时，按该标价扣一次。为 0 不扣。种子数据里的对话模型标价是 0，要在管理端模型页改成大于 0 才会看到扣减。
+- 策略 B：`priceCredits` 是每 1000 token 的积分，按 `usage.total_tokens` 向上取整。没有 usage 时按 1 个单位。调用前按提示词长度和 `maxTokens` 预留，完成后按实际用量实扣。
+- 积分不够时，SSE 的 `error` 事件带 `code=INSUFFICIENT_CREDITS`（以及需要 / 可用积分）。
+
+### 真实模型与 Docker Desktop
+
+浏览器不持有模型密钥。API 在 `LLM_API_KEY` 或 `XY_API_KEY` 有值时，经 `ModelService.runTurn` 以 `stream: true` 请求 OpenAI 兼容的 `/v1/chat/completions`。密钥只放本机 `.env`，不要写进仓库、`docker-compose.override.yml` 或聊天记录。
+
+Docker Desktop for Mac 上，容器直连 `api.xytoken.xyb2b.com` 会 TLS 握手失败（OpenSSL unexpected EOF），宿主机 curl / Node 正常。用宿主机代理把容器里的 HTTP 转到上游 HTTPS：
+
+```bash
+node scripts/xy-llm-proxy.mjs
+cp docker-compose.override.yml.example docker-compose.override.yml
+# .env 中填写 LLM_API_KEY 或 XY_API_KEY，不要写进 override
+docker compose up -d
+```
+
+代理默认听 `0.0.0.0:18765`。override 只做两件事：给 `api` 加上 `host.docker.internal:host-gateway`，并把 `LLM_BASE_URL` / `XY_BASE_URL` 设为 `http://host.docker.internal:18765/v1`。`docker-compose.override.yml` 已 gitignore。不用 Mac Docker 时不要复制这份 override，否则会去连一个没启动的代理。
+
+### 怎样本地确认
+
+```bash
+docker compose up -d
+# http://127.0.0.1:8888 用 demo@visitworlds.me 打开一个助手会话
+```
+
+1. Enter 发出消息；Shift+Enter 只换行；生成过程中能看到「正在生成…」。
+2. 上一条还在吐字时再 Enter：上一条停止，新消息马上开始，不会等上一条说完。
+3. 只点「停止生成」时，当前回复停止，输入框里的草稿还在。
+4. 管理端把对话模型的积分标价改成大于 0，再发一条。钱包流水是 `model` 扣减。再成功调用一个收费技能，流水仍是 `invoke`。
+5. 要走真实模型：按上面的顺序先起代理，再在 `.env` 放密钥，然后重建 / 重启 api。不放密钥时会话仍是 mock 流式回复，页面会提示「当前是本地演示回复」。
+6. 第一条用户消息会把仍是助手名的会话标题改成这句话的前 24 字。已经改过的标题不会被动。
+7. 模型不可用、处理超时、积分不足都是中文错误，不出现供应商品牌。失败且服务端没收下这条消息时，原文回到输入框，再发不会多出一条用户记录。
+8. 右侧技能勾选从下一条消息起生效。未绑定技能的助手只对话。手动确认选拒绝后，会话里留下「已取消、不扣积分」，不再停在待确认。
+
+### :8888 验收
+
+```bash
+docker compose up -d
+docker compose exec api node dist/scripts/reseed-agent-prompts.js
+# 真实模型（Docker Desktop for Mac）先：
+# node scripts/xy-llm-proxy.mjs
+# cp docker-compose.override.yml.example docker-compose.override.yml
+# 密钥只写 .env 的 LLM_API_KEY 或 XY_API_KEY
+```
+
+打开 http://127.0.0.1:8888 ，用 `demo@visitworlds.me` / `Demo123456` 进入任一助手。空会话能看到该助手的建议。Enter 发送，Shift+Enter 换行。生成中再 Enter 会停掉上一条再发。停止按钮只停止。结束后回复留在记录里，输入框上方的逐字内容消失。从店铺工作台进入的会话显示默认店铺名。
+
+## 11. 助手提示词与会话上下文
+
+12 个已发布助手的 `systemPrompt` 都是完整作业说明（角色、工作方式、领域专长、输出格式、硬边界、店铺上下文），约 400–900 字。运行时还会在每轮前面补上：助手名、已启用技能名称和一句话用途、是否需要确认、默认店铺、上海时区当天日期。
+
+从店铺工作台点「开始会话」会带上 `store_id`。会话里需绑店的技能如果没写店铺，默认用这家店。换店前由提示词要求先问用户。
+
+店铺列表 `/stores` 只放卡片（一行两张，`sm:grid-cols-2`），动作为进入工作台、校验、断开、删除。对接表单在 `/stores/new`，保存后进入该店工作台。工作台能力按 `for_store_platform` 过滤：只返回 `platforms_json` 含该平台 id 的工具，平台列表为空的需绑店工具不会混进来；没有命中时用哨兵 id，避免变成全量列表。
+
+上下文窗口（`chat-context.ts`）：
+
+- 预算默认 **10000 估算 token**。估算方式是 2 个字符算 1 token，落在 8k–12k 的目标带里，对中文偏保守。
+- 始终保留组装后的系统提示和最新一轮用户消息。更早的轮次按从新到旧装入预算；装不下的整轮折叠成一条「会话摘要」，原始消息仍留在数据库。
+- 技能调用和它的结果必须成对，不会拆开。超长技能结果在发给模型时截到 1500 字，并标明「结果已截断，完整内容在调用记录」。
+- 中止后如果只留下了没有结果的技能调用，下一轮会补一条「已中断、没有结果」，避免坏掉后续请求。
+
+已有库更新提示词（不改技能绑定）：
+
+```bash
+docker compose exec api node dist/scripts/reseed-agent-prompts.js
+```
+
+容器启动时的 `seed.js` 也会按助手 key 写回这些提示词。本地没跑 Docker 时，在 `services/api` 先 `pnpm test`（含编译）再 `node dist/scripts/reseed-agent-prompts.js`。

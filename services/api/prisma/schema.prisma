@@ -223,6 +223,7 @@ model Conversation {
   version      Int       @default(1)
   confirmMode  String    @default("auto") @map("confirm_mode")
   showThinking Boolean   @default(false) @map("show_thinking")
+  storeId      String?   @map("store_id")
   deletedAt    DateTime? @map("deleted_at")
   createdAt    DateTime  @default(now()) @map("created_at")
   updatedAt    DateTime  @updatedAt @map("updated_at")

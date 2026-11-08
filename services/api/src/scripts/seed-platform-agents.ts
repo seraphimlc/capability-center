@@ -1,15 +1,15 @@
 import { PrismaClient } from '@prisma/client';
 import { ulid } from 'ulid';
+import { AGENT_PROMPTS, type PublishedAgentKey } from '../agent-prompts';
 import { asPlatforms } from '../tool-classify';
 
 const prisma = new PrismaClient();
 
 const PLATFORMS: {
   id: string;
-  key: string;
+  key: PublishedAgentKey;
   name: string;
   summary: string;
-  prompt: string;
   suggestions: string[];
   toolMatchers: RegExp[];
 }[] = [
@@ -18,8 +18,6 @@ const PLATFORMS: {
     key: 'amazon-store-assistant',
     name: '亚马逊店铺助手',
     summary: '盯库存、Listing、广告与竞品，默认围绕你已连接的亚马逊店铺作业。',
-    prompt:
-      '你是亚马逊店铺助手。优先调用已绑定的亚马逊相关能力，用简体中文给出可执行建议。涉及店铺数据时提醒用户在调用前选对店铺。不要提及任何上游供应商品牌名。',
     suggestions: ['帮我看下 FBA 库存风险', '优化这条 Listing 标题和五点', '对比几个竞品 ASIN', '检查广告投放是否该加预算'],
     toolMatchers: [/amazon|amz|asin|fba|aba|keepa|listing|sponsored|sp-api/i],
   },
@@ -28,7 +26,6 @@ const PLATFORMS: {
     key: 'shopify-store-assistant',
     name: 'Shopify 店铺助手',
     summary: '服务独立站运营：商品内容、转化文案、视觉素材与流量概览。',
-    prompt: '你是 Shopify 店铺助手。优先使用通用选品、文案、视觉与店铺运营能力，回答围绕独立站转化。不要提及上游供应商品牌名。',
     suggestions: ['写一套独立站商品详情文案', '出主图与场景图生成简报', '估算这款货的利润', '总结近 7 天流量结构'],
     toolMatchers: [/shopify|独立站|listing-copy|main-image|image-caption|store-traffic|profit|translate|ad-copy|text-insight/i],
   },
@@ -37,7 +34,6 @@ const PLATFORMS: {
     key: 'temu-store-assistant',
     name: 'Temu 店铺助手',
     summary: '覆盖 Temu 订单、库存、类目、促销与合规相关能力。',
-    prompt: '你是 Temu 店铺助手。优先调用 Temu 相关能力，帮助处理订单、上架、促销与合规。不要提及上游供应商品牌名。',
     suggestions: ['查一下美国站待发订单', '搜索可上架类目', '看看有哪些促销可开', '检查商品合规风险'],
     toolMatchers: [/temu/i],
   },
@@ -46,7 +42,6 @@ const PLATFORMS: {
     key: 'ebay-store-assistant',
     name: 'eBay 店铺助手',
     summary: '帮你搜索 eBay 供给、优化刊登文案并处理店铺日常。',
-    prompt: '你是 eBay 店铺助手。优先使用 eBay 搜索与通用刊登/运营能力。不要提及上游供应商品牌名。',
     suggestions: ['搜索 camping lantern 的 eBay 供给', '优化一则刊登标题', '翻译 Listing 到德语站', '写一条促销广告文案'],
     toolMatchers: [/ebay|listing-copy|title-optimizer|translate-listing|store-traffic|compliance|review-digest/i],
   },
@@ -55,7 +50,6 @@ const PLATFORMS: {
     key: 'shopee-store-assistant',
     name: 'Shopee 店铺助手',
     summary: '面向虾皮店铺：商品、分类、账户健康与日常运营。',
-    prompt: '你是 Shopee 店铺助手。优先调用 Shopee 相关能力，关注账户健康与商品运营。不要提及上游供应商品牌名。',
     suggestions: ['看下店铺账户健康', '整理店铺分类', '检查商品刊登是否完整', '生成客服回复话术'],
     toolMatchers: [/shopee|faq-reply|listing-health|store-traffic|compliance/i],
   },
@@ -64,7 +58,6 @@ const PLATFORMS: {
     key: 'tiktok-shop-assistant',
     name: 'TikTok Shop 店铺助手',
     summary: '围绕 TikTok Shop：带货视频、商品数据、达人与店铺表现。',
-    prompt: '你是 TikTok Shop 店铺助手。优先调用 TikTok / 短视频相关能力，帮助选品、内容和店铺运营。不要提及上游供应商品牌名。',
     suggestions: ['搜索相关带货视频', '看新品排行有什么机会', '生成一条口播脚本', '查店铺商品表现'],
     toolMatchers: [/tiktok|echotik|口播|短视频|videogen|aigc-videogen|带货/i],
   },
@@ -73,7 +66,6 @@ const PLATFORMS: {
     key: 'walmart-store-assistant',
     name: 'Walmart 店铺助手',
     summary: '帮你做 Walmart 选品搜索、刊登优化与运营动作。',
-    prompt: '你是 Walmart 店铺助手。优先使用 Walmart 搜索与通用刊登/选品能力。不要提及上游供应商品牌名。',
     suggestions: ['搜索 Walmart 上的露营灯', '写一版刊登文案', '测算利润空间', '检查合规风险词'],
     toolMatchers: [/walmart|listing-copy|title-optimizer|profit|compliance|product-picker|competitor/i],
   },
@@ -82,7 +74,6 @@ const PLATFORMS: {
     key: 'alibaba1688-store-assistant',
     name: '1688 采购助手',
     summary: '找货、以图搜同款、看商品详情与采购链路。',
-    prompt: '你是 1688 采购助手。优先调用 1688 找货与商品详情类能力，帮助确认供应商与价格带。不要提及上游供应商品牌名。',
     suggestions: ['按图搜 1688 同款', '查这个商品的阶梯价', '帮我找一批露营灯货源', '对比两家供应商'],
     toolMatchers: [/1688|alibaba|sourcing|找货|以图搜/i],
   },
@@ -191,7 +182,7 @@ async function main() {
       key: p.key,
       name: p.name,
       summary: p.summary,
-      prompt: p.prompt,
+      prompt: AGENT_PROMPTS[p.key],
       suggestions: p.suggestions,
       primary: chat.id,
       backup: reason?.id || null,

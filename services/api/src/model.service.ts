@@ -37,6 +37,7 @@ export type LlmTurn = {
   degraded: boolean;
   aborted: boolean;
   displayName: string;
+  modelId: string | null;
 };
 
 export function readLlmRuntime(): LlmRuntime {
@@ -88,20 +89,30 @@ export class ModelService {
       ? await this.prisma.aiModel.findFirst({ where: { id: input.backupModelId, status: 'active' } })
       : null;
     if (runtime.provider === 'mock') {
-      return this.mockTurn(input.messages, input.tools, input.showThinking, input.signal, input.onDelta, primary?.displayName || '标准对话');
+      const turn = await this.mockTurn(
+        input.messages,
+        input.tools,
+        input.showThinking,
+        input.signal,
+        input.onDelta,
+        primary?.displayName || '标准对话',
+      );
+      return { ...turn, modelId: primary?.id ?? null };
     }
     try {
       return await this.remoteTurn(runtime, primary, input, false);
     } catch (error) {
       if (input.signal.aborted) {
-        return emptyTurn(runtime.provider, primary?.displayName || '标准对话', true);
+        return emptyTurn(runtime.provider, primary?.displayName || '标准对话', true, primary?.id ?? null);
       }
+      if (isTimeoutError(error)) throw new ApiException('DEPENDENCY_TIMEOUT', '处理超时，请重试');
       if (backup && backup.id !== primary?.id) {
         try {
           const turn = await this.remoteTurn(runtime, backup, input, true);
           return turn;
         } catch (backupError) {
-          if (input.signal.aborted) return emptyTurn(runtime.provider, backup.displayName, true);
+          if (input.signal.aborted) return emptyTurn(runtime.provider, backup.displayName, true, backup.id);
+          if (isTimeoutError(backupError)) throw new ApiException('DEPENDENCY_TIMEOUT', '处理超时，请重试');
           console.error('model backup failed', whitelabelText(backupError instanceof Error ? backupError.message : 'error'));
         }
       }
@@ -264,6 +275,7 @@ export class ModelService {
       degraded,
       aborted: input.signal.aborted,
       displayName: model?.displayName || '标准对话',
+      modelId: model?.id ?? null,
     };
   }
 
@@ -297,6 +309,7 @@ export class ModelService {
       degraded: false,
       aborted: signal.aborted,
       displayName,
+      modelId: null,
     };
   }
 }
@@ -396,12 +409,30 @@ function chunkText(value: string, size: number): string[] {
   return parts.length ? parts : [''];
 }
 
-function emptyTurn(provider: string, displayName: string, aborted: boolean): LlmTurn {
-  return { text: '', thinking: '', toolCalls: [], usage: null, provider, degraded: false, aborted, displayName };
+function emptyTurn(provider: string, displayName: string, aborted: boolean, modelId: string | null = null): LlmTurn {
+  return {
+    text: '',
+    thinking: '',
+    toolCalls: [],
+    usage: null,
+    provider,
+    degraded: false,
+    aborted,
+    displayName,
+    modelId,
+  };
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = (error as { name?: string }).name || '';
+  if (name === 'TimeoutError') return true;
+  const message = error instanceof Error ? error.message : '';
+  return name === 'AbortError' && /timeout|timed out/i.test(message);
 }
 
 void asJson;

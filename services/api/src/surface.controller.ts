@@ -6,6 +6,7 @@ import { RedisService } from './redis.service';
 import { InvokeService } from './invoke.service';
 import { FileService } from './file.service';
 import { AgentService, toMessage } from './agent.service';
+import { chatErrorMessage } from './chat-context';
 import { StoreService } from './store.service';
 import { KeyService } from './key.service';
 import { WalletService } from './wallet.service';
@@ -181,11 +182,19 @@ export class AgentController {
   }
 
   @Post('api/www/conversations')
-  async create(@CurrentUser() user: AuthUser, @Body() body: { agent_key?: string; title?: string }) {
+  async create(@CurrentUser() user: AuthUser, @Body() body: { agent_key?: string; title?: string; store_id?: string }) {
     const agent = await this.prisma.agent.findFirst({
       where: { tenantId: user.tenantId, key: body.agent_key, status: 'published' },
     });
     if (!agent) throw new ApiException('AGENT_NOT_PUBLISHED');
+    let storeId: string | undefined;
+    if (body.store_id) {
+      const shop = await this.prisma.shopAccount.findFirst({
+        where: { id: body.store_id, userId: user.id, tenantId: user.tenantId },
+      });
+      if (!shop) throw new ApiException('VALIDATION_ERROR', '店铺不存在');
+      storeId = shop.id;
+    }
     const conversation = await this.prisma.conversation.create({
       data: {
         id: ulid(),
@@ -195,6 +204,7 @@ export class AgentController {
         title: (body.title || agent.name).slice(0, 80),
         confirmMode: 'auto',
         showThinking: agent.showThinkingDefault,
+        storeId,
       },
     });
     const bindings = await this.prisma.agentTool.findMany({ where: { agentId: agent.id } });
@@ -215,6 +225,9 @@ export class AgentController {
     const tools = await this.prisma.tool.findMany({ where: { id: { in: bindings.map((row) => row.toolId) } } });
     const enabled = new Map(skills.map((row) => [row.toolId, row.enabled]));
     const model = agent?.primaryModelId ? await this.prisma.aiModel.findUnique({ where: { id: agent.primaryModelId } }) : null;
+    const store = conversation.storeId
+      ? await this.prisma.shopAccount.findFirst({ where: { id: conversation.storeId, userId: user.id } })
+      : null;
     return {
       id: conversation.id,
       title: conversation.title,
@@ -230,6 +243,9 @@ export class AgentController {
             unbound: bindings.length === 0,
             model_tier: model?.displayName || '标准对话',
           }
+        : null,
+      store: store
+        ? { id: store.id, name: store.name, platform: store.platform, marketplace: store.marketplace, status: store.status }
         : null,
       skills: tools.map((tool) => ({
         tool_id: tool.id,
@@ -345,7 +361,12 @@ export class AgentController {
         });
       } catch (error) {
         const parsed = errorBody(error);
-        send('error', { code: parsed.code, message: parsed.message, request_id: req.requestId });
+        send('error', {
+          code: parsed.code,
+          message: chatErrorMessage(parsed.code, parsed.message),
+          request_id: req.requestId,
+          ...(parsed.details ? { details: parsed.details } : {}),
+        });
         send('done', { finish_reason: 'error' });
       } finally {
         req.off('close', abort);

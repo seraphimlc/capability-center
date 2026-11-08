@@ -43,6 +43,65 @@ export function canHold(balance: number, openHolds: number, cost: number): boole
   return cost >= 0 && availableCredits(balance, openHolds) >= cost;
 }
 
+export type ModelTokenUsage = {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+};
+
+/**
+ * Chat model prices are integer CNY credits on `ai_models.price_credits`.
+ *
+ * Default strategy A (flag missing, empty, or anything other than B): one
+ * completed model call costs `priceCredits` when that price is positive.
+ * Strategy B: `priceCredits` is the price per 1,000 tokens, rounded up.
+ * Missing usage falls back to one unit. `priceCredits <= 0` is free under
+ * every strategy, so billing is not limited to strategy B.
+ */
+export function modelTurnCredits(
+  strategy: string | null | undefined,
+  priceCredits: number,
+  usage?: ModelTokenUsage | null,
+): number {
+  const price = creditPrice(priceCredits);
+  if (price <= 0) return 0;
+  if (!tokenStrategy(strategy)) return price;
+  const tokens = tokenCount(usage);
+  if (tokens <= 0) return price;
+  return Math.ceil(tokens / 1000) * price;
+}
+
+/** Reservation taken before the call. Strategy B covers the prompt plus max output. */
+export function modelHoldAmount(
+  strategy: string | null | undefined,
+  priceCredits: number,
+  maxTokens = 2048,
+  promptChars = 0,
+): number {
+  const price = creditPrice(priceCredits);
+  if (price <= 0) return 0;
+  if (!tokenStrategy(strategy)) return price;
+  const promptTokens = Math.max(0, Math.floor(promptChars));
+  const outputTokens = Math.max(1, Math.floor(maxTokens) || 0);
+  const units = Math.max(1, Math.ceil((promptTokens + outputTokens) / 1000));
+  return units * price;
+}
+
+function creditPrice(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.floor(value));
+}
+
+function tokenStrategy(strategy: string | null | undefined): boolean {
+  return (strategy || 'A').trim().toUpperCase() === 'B';
+}
+
+function tokenCount(usage?: ModelTokenUsage | null): number {
+  if (!usage) return 0;
+  if (usage.total_tokens && usage.total_tokens > 0) return usage.total_tokens;
+  return (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+}
+
 export function assertSafePrefix(prefix: string): string {
   const cleaned = prefix.trim().replace(/^\/+|\/+$/g, '');
   if (!cleaned) {

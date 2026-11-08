@@ -4,10 +4,12 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from './prisma.service';
 import { RedisService } from './redis.service';
 import { InvokeService } from './invoke.service';
-import { ModelService, type LlmMessage, type LlmToolCall } from './model.service';
+import { ModelService, readLlmRuntime, type LlmMessage, type LlmToolCall, type LlmTurn } from './model.service';
+import { WalletService } from './wallet.service';
 import { ApiException } from './errors';
 import type { AuthUser } from './auth.guard';
-import { JsonSchema, whitelabelText } from './domain';
+import { JsonSchema, modelHoldAmount, modelTurnCredits, shanghaiParts, whitelabelText } from './domain';
+import { assembleSystemPrompt, buildModelContext, conversationTitleFromMessage, type TranscriptMessage } from './chat-context';
 import { asJson, flag } from './support.service';
 
 type Send = (event: string, data: unknown) => void;
@@ -21,12 +23,13 @@ export class AgentService {
     private readonly redis: RedisService,
     private readonly invoke: InvokeService,
     private readonly models: ModelService,
+    private readonly wallet: WalletService,
   ) {}
 
   async begin(user: AuthUser, id: string) {
     const conversation = await this.owned(user, id);
-    const locked = await this.redis.client.set(`lock:conv:${id}`, '1', 'EX', 180, 'NX');
-    if (locked !== 'OK') throw new ApiException('CONFLICT', '会话正在生成，请稍后再试');
+    const acquired = await this.acquireConversation(id);
+    if (!acquired) throw new ApiException('CONFLICT', '会话正在生成，请稍后再试');
     const controller = new AbortController();
     this.runs.set(id, controller);
     await this.redis.client.del(`stop:${id}`);
@@ -40,8 +43,9 @@ export class AgentService {
 
   async stop(user: AuthUser, id: string) {
     await this.owned(user, id);
-    this.runs.get(id)?.abort();
+    // Flag first so a replacement turn waits out this one instead of inheriting the stop.
     await this.redis.client.set(`stop:${id}`, '1', 'EX', 30);
+    this.runs.get(id)?.abort();
     return { stopping: true };
   }
 
@@ -60,6 +64,7 @@ export class AgentService {
     if (isBlocked(content)) throw new ApiException('CONTENT_BLOCKED');
     const agent = await this.prisma.agent.findUnique({ where: { id: conversation.agentId } });
     if (!agent || agent.status !== 'published') throw new ApiException('AGENT_NOT_PUBLISHED');
+    const priorUsers = await this.prisma.message.count({ where: { conversationId: conversation.id, role: 'user' } });
     const userMessage = await this.prisma.message.create({
       data: {
         id: ulid(),
@@ -70,7 +75,14 @@ export class AgentService {
         toolCallJson: input.attachments.length ? asJson({ attachments: input.attachments }) : undefined,
       },
     });
+    const nextTitle = conversationTitleFromMessage(conversation.title, agent.name, content, priorUsers);
+    if (nextTitle) {
+      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { title: nextTitle } });
+    }
     input.send('meta', { user_message_id: userMessage.id, assistant_message_id: null, version: conversation.version });
+    if (readLlmRuntime().provider === 'mock') {
+      input.send('notice', { code: 'MODEL_DEMO', message: '当前是本地演示回复，不代表店铺实时数据。' });
+    }
     const enabled = await this.enabledTools(conversation.id, agent.id);
     const llmTools = enabled.map((tool) => ({
       key: tool.key,
@@ -82,17 +94,27 @@ export class AgentService {
       where: { conversationId: conversation.id },
       orderBy: { createdAt: 'asc' },
     });
-    const messages: LlmMessage[] = [
-      {
-        role: 'system',
-        content: systemPrompt(agent.systemPrompt, agent.name, llmTools.map((tool) => tool.name)),
-      },
-      ...history.map(toLlm).filter((item): item is LlmMessage => Boolean(item)),
-    ];
-    if (input.attachments.length) {
-      const last = messages[messages.length - 1];
-      if (last?.role === 'user') last.content += `\n附件文件：${input.attachments.join(' ')}`;
+    const transcript: TranscriptMessage[] = [];
+    for (const row of history) {
+      const item = toTranscript(row);
+      if (item) transcript.push(item);
     }
+    const lastUser = transcript[transcript.length - 1];
+    if (input.attachments.length && lastUser?.role === 'user') {
+      lastUser.content += `\n附件文件：${input.attachments.join(' ')}`;
+    }
+    const today = shanghaiParts();
+    const store = await this.conversationStore(input.user.id, conversation.storeId);
+    const system = assembleSystemPrompt({
+      base: agent.systemPrompt,
+      name: agent.name,
+      skills: llmTools.map((tool) => ({ name: tool.name, summary: tool.summary })),
+      confirmMode: conversation.confirmMode,
+      store,
+      today: `${today.y}-${today.m}-${today.d}`,
+      runtime: readLlmRuntime().provider === 'mock' ? 'demo' : 'live',
+    });
+    const modelMessages = () => buildModelContext({ system, history: transcript }).messages;
     let produced = '';
     let rounds = 0;
     let degraded = false;
@@ -102,34 +124,44 @@ export class AgentService {
         input.send('done', { finish_reason: 'cancelled', version: await this.bump(conversation.id) });
         return;
       }
-      const turn = await this.models.runTurn({
-        messages,
-        tools: llmTools,
-        primaryModelId: agent.primaryModelId,
-        backupModelId: agent.backupModelId,
-        showThinking: conversation.showThinking,
-        signal: input.signal,
-        onDelta: (chunk) => {
-          if (chunk.type === 'text') produced += chunk.text;
-          input.send(chunk.type === 'thinking' ? 'thinking' : 'delta', { text: chunk.text });
-        },
-        userId: input.user.id,
-        tenantId: input.user.tenantId,
-      });
+      const bizId = `${userMessage.id}:${rounds}`;
+      const windowed = modelMessages();
+      const reservation = await this.reserveModelTurn(input.user, agent, bizId, windowed);
+      let turn: LlmTurn;
+      try {
+        turn = await this.models.runTurn({
+          messages: windowed,
+          tools: llmTools,
+          primaryModelId: agent.primaryModelId,
+          backupModelId: agent.backupModelId,
+          showThinking: conversation.showThinking,
+          signal: input.signal,
+          onDelta: (chunk) => {
+            if (chunk.type === 'text') produced += chunk.text;
+            input.send(chunk.type === 'thinking' ? 'thinking' : 'delta', { text: chunk.text });
+          },
+          userId: input.user.id,
+          tenantId: input.user.tenantId,
+        });
+      } catch (error) {
+        await this.releaseModelHold(reservation.holdKey);
+        throw error;
+      }
       if (turn.degraded) {
         degraded = true;
         input.send('notice', { code: 'MODEL_DEGRADED', message: '已切换备用模型' });
       }
       if (turn.aborted || (await this.stopped(conversation.id, input.signal))) {
+        await this.releaseModelHold(reservation.holdKey);
         await this.saveAssistant(conversation.id, produced || turn.text, 'stopped', null);
         input.send('done', { finish_reason: 'cancelled', version: await this.bump(conversation.id) });
         return;
       }
+      await this.maybeBillModel(input.user, turn.modelId, bizId, input.requestId, turn.usage, reservation.holdKey);
       if (!turn.toolCalls.length) {
         if ((produced || turn.text).trim()) {
           await this.saveAssistant(conversation.id, produced || turn.text, 'complete', null);
         }
-        await this.maybeBillModel(input.user, agent.primaryModelId, userMessage.id, input.requestId);
         input.send('done', {
           finish_reason: 'stop',
           version: await this.bump(conversation.id),
@@ -144,13 +176,17 @@ export class AgentService {
         const summary = '当前会话未启用该技能';
         input.send('tool_call', card(call, null));
         input.send('tool_result', { call_id: call.id, ok: false, code: 'TOOL_NOT_ALLOWED_IN_SESSION', summary });
-        messages.push(assistantCall(turn.text, call));
-        messages.push({ role: 'tool', tool_call_id: call.id, content: summary });
+        transcript.push(assistantCall(turn.text, call));
+        transcript.push({ role: 'tool', tool_call_id: call.id, tool_name: call.name, content: summary });
         produced = '';
         rounds += 1;
         continue;
       }
       const args = fillFiles(call.arguments, tool.schemaJson as JsonSchema, input.attachments);
+      const wantsStore = tool.storeBound || Boolean((tool.schemaJson as JsonSchema).properties?.store_id);
+      if (conversation.storeId && wantsStore && (args.store_id === undefined || args.store_id === '')) {
+        args.store_id = conversation.storeId;
+      }
       if (conversation.confirmMode === 'manual') {
         await this.saveAssistant(conversation.id, produced || turn.text, 'awaiting_confirm', {
           call_id: call.id,
@@ -169,8 +205,8 @@ export class AgentService {
       const executed = await this.execTool(input, conversation.id, tool, call.id, args);
       input.send('tool_call', { call_id: call.id, tool_key: tool.key, tool_name: tool.name, args });
       input.send('tool_result', executed.event);
-      messages.push(assistantCall(turn.text, { ...call, arguments: args, raw: JSON.stringify(args) }));
-      messages.push({ role: 'tool', tool_call_id: call.id, content: executed.event.summary });
+      transcript.push(assistantCall(turn.text, { ...call, arguments: args, raw: JSON.stringify(args) }));
+      transcript.push({ role: 'tool', tool_call_id: call.id, tool_name: tool.key, content: executed.event.summary });
       if (!executed.event.ok && executed.event.code === 'INSUFFICIENT_CREDITS') {
         await this.saveAssistant(conversation.id, `${produced}\n积分不足，技能未执行。`.trim(), 'complete', null);
         input.send('done', { finish_reason: 'error', version: await this.bump(conversation.id) });
@@ -195,20 +231,18 @@ export class AgentService {
     const call = pending?.toolCallJson as { call_id?: string; tool_key?: string; args?: Record<string, unknown>; tool_name?: string } | null;
     if (!pending || !call?.call_id || call.call_id !== body.call_id) throw new ApiException('CONFLICT', '没有待确认的技能调用');
     if (body.decision === 'reject') {
-      await this.prisma.message.update({
+      const kept = pending.content.trim();
+      const note = await this.prisma.message.update({
         where: { id: pending.id },
-        data: { status: 'complete', content: `${pending.content}\n已拒绝本次技能调用。`.trim() },
-      });
-      const note = await this.prisma.message.create({
         data: {
-          id: ulid(),
-          conversationId,
-          role: 'assistant',
-          content: '好的，已取消这次技能调用，不会扣减积分。',
           status: 'complete',
+          toolCallJson: Prisma.DbNull,
+          content: kept
+            ? `${kept}\n\n已取消这次技能调用，没有执行，也不会扣积分。`
+            : '已取消这次技能调用，没有执行，也不会扣积分。',
         },
       });
-      return { messages: [toMessage(pending), toMessage(note)], version: await this.bump(conversationId) };
+      return { messages: [toMessage(note)], version: await this.bump(conversationId) };
     }
     const tool = await this.prisma.tool.findFirst({ where: { tenantId: user.tenantId, key: call.tool_key, status: 'published' } });
     if (!tool) throw new ApiException('TOOL_NOT_PUBLISHED');
@@ -371,27 +405,113 @@ export class AgentService {
     return (await this.redis.client.get(`stop:${id}`)) === '1';
   }
 
-  private async maybeBillModel(user: AuthUser, modelId: string | null, bizId: string, requestId: string) {
+  /**
+   * Bill one completed model call.
+   *
+   * Default (flag `billing_strategy` missing or `A`): when `priceCredits > 0`,
+   * capture that many CNY integer credits once per completed call. Strategy `B`
+   * charges `priceCredits` per 1,000 tokens (rounded up) from `LlmTurn.usage`,
+   * and falls back to one unit when usage is missing. A zero price is free.
+   * The pre-call hold is released on abort or error. Ledger `bizType` is
+   * `model`; tool invokes stay `invoke`.
+   */
+  private async maybeBillModel(
+    _user: AuthUser,
+    modelId: string | null,
+    bizId: string,
+    requestId: string,
+    usage: LlmTurn['usage'],
+    holdKey: string,
+  ) {
+    try {
+      const strategy = await flag(this.prisma, 'billing_strategy', 'A');
+      if (!modelId) {
+        await this.releaseModelHold(holdKey);
+        return;
+      }
+      const model = await this.prisma.aiModel.findUnique({ where: { id: modelId } });
+      const amount = modelTurnCredits(strategy, model?.priceCredits ?? 0, usage);
+      if (!holdKey || amount <= 0) {
+        await this.releaseModelHold(holdKey);
+        return;
+      }
+      const tokens = usage?.total_tokens || (usage ? usage.prompt_tokens + usage.completion_tokens : 0);
+      await this.wallet.captureKeyed({
+        holdKey,
+        amount,
+        bizType: 'model',
+        bizId,
+        requestId,
+        note: tokens > 0 ? `对话模型扣减 ${tokens} tokens` : '对话模型扣减',
+      });
+    } catch (error) {
+      await this.releaseModelHold(holdKey);
+      throw error;
+    }
+  }
+
+  private async reserveModelTurn(
+    user: AuthUser,
+    agent: { primaryModelId: string | null; backupModelId: string | null },
+    bizId: string,
+    messages: LlmMessage[],
+  ): Promise<{ holdKey: string }> {
     const strategy = await flag(this.prisma, 'billing_strategy', 'A');
-    if (strategy !== 'B' || !modelId) return;
-    const model = await this.prisma.aiModel.findUnique({ where: { id: modelId } });
-    if (!model || model.priceCredits <= 0) return;
-    const { WalletService } = await import('./wallet.service');
-    void WalletService;
-    void user;
-    void bizId;
-    void requestId;
+    const primary = agent.primaryModelId
+      ? await this.prisma.aiModel.findFirst({ where: { id: agent.primaryModelId, status: 'active' } })
+      : await this.prisma.aiModel.findFirst({
+          where: { tenantId: user.tenantId, capability: 'chat', status: 'active' },
+        });
+    const backup = agent.backupModelId
+      ? await this.prisma.aiModel.findFirst({ where: { id: agent.backupModelId, status: 'active' } })
+      : null;
+    const promptChars = messages.reduce((sum, message) => sum + (message.content?.length || 0), 0);
+    const estimate = Math.max(
+      modelHoldAmount(strategy, primary?.priceCredits ?? 0, primary?.maxTokens, promptChars),
+      modelHoldAmount(strategy, backup?.priceCredits ?? 0, backup?.maxTokens, promptChars),
+    );
+    if (estimate <= 0) return { holdKey: '' };
+    const holdKey = `model:${bizId}`;
+    await this.wallet.holdKeyed(user.id, holdKey, estimate);
+    return { holdKey };
+  }
+
+  private async releaseModelHold(holdKey: string): Promise<void> {
+    await this.wallet.releaseKeyed(holdKey);
+  }
+
+  private async conversationStore(userId: string, storeId: string | null) {
+    if (!storeId) return null;
+    const shop = await this.prisma.shopAccount.findFirst({
+      where: { id: storeId, userId },
+    });
+    if (!shop) return null;
+    return {
+      name: shop.name,
+      platform: shop.platform,
+      marketplace: shop.marketplace,
+      connected: shop.status === 'connected',
+    };
+  }
+
+  private async acquireConversation(id: string): Promise<boolean> {
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const locked = await this.redis.client.set(`lock:conv:${id}`, '1', 'EX', 180, 'NX');
+      if (locked === 'OK') return true;
+      const stopping = (await this.redis.client.get(`stop:${id}`)) === '1';
+      if (!stopping) return false;
+      await delay(100);
+    }
+    return false;
   }
 }
 
-function systemPrompt(base: string, name: string, tools: string[]): string {
-  const skill = tools.length
-    ? `你可以使用这些已启用技能：${tools.join('、')}。需要外部结果时调用技能，不要编造实时数据。`
-    : '当前助手未绑定技能，仅支持对话。不要假装调用外部工具。';
-  return `${base}\n你是「${name}」，服务于能力中心。${skill}\n使用简体中文。不要提及上游供应商名称。积分以人民币口径的整数积分计算。`;
-}
-
-function toLlm(row: { role: string; content: string; toolCallJson: Prisma.JsonValue | null }): LlmMessage | null {
+function toTranscript(row: {
+  role: string;
+  content: string;
+  status: string;
+  toolCallJson: Prisma.JsonValue | null;
+}): TranscriptMessage | null {
   if (row.role === 'user') return { role: 'user', content: row.content };
   if (row.role === 'assistant') {
     const call = row.toolCallJson as { call_id?: string; tool_key?: string; args?: Record<string, unknown> } | null;
@@ -399,19 +519,24 @@ function toLlm(row: { role: string; content: string; toolCallJson: Prisma.JsonVa
       return {
         role: 'assistant',
         content: row.content,
-        tool_calls: [{ id: call.call_id, name: call.tool_key, arguments: JSON.stringify(call.args || {}) }],
+        tool_calls: [{
+          id: call.call_id,
+          name: call.tool_key,
+          arguments: JSON.stringify(call.args || {}),
+          pending: row.status === 'awaiting_confirm',
+        }],
       };
     }
     return { role: 'assistant', content: row.content };
   }
   if (row.role === 'tool') {
-    const call = row.toolCallJson as { call_id?: string } | null;
-    return { role: 'tool', content: row.content, tool_call_id: call?.call_id };
+    const call = row.toolCallJson as { call_id?: string; tool_key?: string } | null;
+    return { role: 'tool', content: row.content, tool_call_id: call?.call_id, tool_name: call?.tool_key };
   }
   return null;
 }
 
-function assistantCall(text: string, call: LlmToolCall): LlmMessage {
+function assistantCall(text: string, call: LlmToolCall): TranscriptMessage {
   return {
     role: 'assistant',
     content: text,
@@ -434,6 +559,10 @@ function fillFiles(args: Record<string, unknown>, schema: JsonSchema, attachment
 
 function isBlocked(content: string): boolean {
   return content.includes('[[blocked]]');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function toMessage(row: {
