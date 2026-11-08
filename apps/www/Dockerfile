@@ -5,6 +5,9 @@ WORKDIR /app
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages ./packages
 COPY services/api/package.json ./services/api/package.json
+# Composer helpers are vendored at apps/www/src/lib/chat-ux.ts (keep in sync with
+# services/api/src/chat-ux.ts). Do not import or COPY that API file: www build
+# must succeed without services/api source in the image.
 COPY apps/www ./apps/www
 COPY apps/admin/package.json ./apps/admin/package.json
 RUN pnpm install --frozen-lockfile
