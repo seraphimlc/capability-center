@@ -1,6 +1,44 @@
 # 能力中心交接文档（HANDOFF）
 
-更新时间：2026-11-08（Asia/Shanghai，对话发送 / 模型计费 / Mac 网关代理）
+更新时间：2026-11-08（Asia/Shanghai）。这是下一位接手的入口。
+
+## 0. 下一位先看这里
+
+### 本轮已经做完
+
+- 对话：Enter 发送，Shift+Enter 换行，输入法组合中不发送。生成中再发会先停上一条再发，不排队。
+- 12 个已发布助手是完整中文作业说明，不是一行人设。每轮注入技能、确认方式、默认店铺、上海日期。长会话按约 1 万估算 token 折叠成「会话摘要」。
+- 模型计费：`maybeBillModel` 会预留、实扣、失败释放。流水 `bizType=model`。策略 A（默认）在 `priceCredits > 0` 时按次扣；策略 B 按每 1000 token 向上取整。种子里的对话标价仍是 0，要在管理端改价才会看到扣减。
+- 店铺：`/stores` 只有卡片（`sm:grid-cols-2`）。对接在 `/stores/new`，保存后进工作台。工作台只显示 `platforms_json` 含该平台 id 的能力（1688 店是 `alibaba1688`）。空平台列表的需绑店工具不会混进来。
+- Mac 上容器访问模型网关：宿主机 `node scripts/xy-llm-proxy.mjs`，见第 10 节。
+
+### 明确不做（下一轮）
+
+商品目录和订单管理不做。多平台商品/订单表还没定。见 `docs/DECISIONS.md`。不要在本轮分支上加 SKU 或订单接口。
+
+### 怎么跑
+
+```bash
+cd /Users/liuchang/Desktop/capability-center
+docker compose up -d
+# 用户端 http://127.0.0.1:8888
+# 已有库只刷新助手提示词：
+docker compose exec api node dist/scripts/reseed-agent-prompts.js
+```
+
+演示账号仍可用：`demo@visitworlds.me` / `Demo123456`，运营 `ops@visitworlds.me` / `Ops123456`，超管 `admin@visitworlds.me` / `Admin123456`。
+
+真实模型：密钥只写本机 `.env` 的 `LLM_API_KEY` 或 `XY_API_KEY`。Docker Desktop for Mac 要先起代理再 compose，见第 10 节。不配密钥时是本地 mock 流，页面会提示演示回复。
+
+测试：`pnpm test`。用例表在 `docs/TEST-CASES.md`。
+
+### 已知缺口
+
+1. 镜像站 `docker.m.daocloud.io` 拉 `node:22-alpine` 可能 401，全量 `compose build` 会失败。用第 7 节的增量 Dockerfile，基于本机已有镜像。
+2. 商品目录、订单管理：下一轮，见 `docs/DECISIONS.md`。
+3. 对话模型种子标价是 0。不改管理端标价就看不到模型扣款。
+
+下文是更早的架构和运维细节，仍然有效。
 
 ## 1. 仓库与运行入口
 

@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from 'react';
 import { api, getToken, readSse, setToken, uploadFile } from '../../../lib/api';
+import { acceptUserSend, composerKeyAction, shouldStopBeforeSend } from '../../../lib/chat-ux';
 
 type Skill = { tool_id: string; key: string; name: string; summary: string; pricing_credits: number; enabled: boolean };
 type Conversation = {
@@ -100,8 +101,8 @@ export default function ChatPage() {
   }
 
   function enqueue(draft: Draft) {
-    queuedRef.current = draft;
-    if (abortRef.current || inflightRef.current) {
+    queuedRef.current = acceptUserSend(queuedRef.current, draft).slot;
+    if (shouldStopBeforeSend(Boolean(abortRef.current || inflightRef.current))) {
       needsStopRef.current = true;
       setHandoff(true);
       setLive('');
@@ -233,9 +234,14 @@ export default function ChatPage() {
   }
 
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== 'Enter' || event.shiftKey) return;
-    const native = event.nativeEvent;
-    if (composing.current || native.isComposing || native.keyCode === 229) return;
+    const action = composerKeyAction({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      isComposing: event.nativeEvent.isComposing,
+      keyCode: event.nativeEvent.keyCode,
+      composing: composing.current,
+    });
+    if (action !== 'send') return;
     event.preventDefault();
     send(text);
   }
