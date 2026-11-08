@@ -141,6 +141,7 @@ Agent 表新增 `platforms_json`；`GET /api/www/agents?platform=amazon` 可过�
 - 调用：`services/api/src/invoke.service.ts`、`linkfox.client.ts`
 - 对话页：`apps/www/src/app/chat/[id]/page.tsx`
 - 对话与模型计费：`services/api/src/agent.service.ts`、`wallet.service.ts`、`model.service.ts`
+- 助手提示词与上下文窗口：`services/api/src/agent-prompts.ts`、`chat-context.ts`、`scripts/reseed-agent-prompts.ts`
 - Mac 网关代理：`scripts/xy-llm-proxy.mjs`、`docker-compose.override.yml.example`
 
 ## 7. 运维备注
@@ -242,3 +243,24 @@ docker compose up -d
 3. 只点「停止生成」时，当前回复停止，输入框里的草稿还在。
 4. 管理端把对话模型的积分标价改成大于 0，再发一条。钱包流水是 `model` 扣减。再成功调用一个收费技能，流水仍是 `invoke`。
 5. 要走真实模型：按上面的顺序先起代理，再在 `.env` 放密钥，然后重建 / 重启 api。不放密钥时会话仍是 mock 流式回复。
+
+## 11. 助手提示词与会话上下文
+
+12 个已发布助手的 `systemPrompt` 都是完整作业说明（角色、工作方式、领域专长、输出格式、硬边界、店铺上下文），约 400–900 字。运行时还会在每轮前面补上：助手名、已启用技能名称和一句话用途、是否需要确认、默认店铺、上海时区当天日期。
+
+从店铺工作台点「开始会话」会带上 `store_id`。会话里需绑店的技能如果没写店铺，默认用这家店。换店前由提示词要求先问用户。
+
+上下文窗口（`chat-context.ts`）：
+
+- 预算默认 **10000 估算 token**。估算方式是 2 个字符算 1 token，落在 8k–12k 的目标带里，对中文偏保守。
+- 始终保留组装后的系统提示和最新一轮用户消息。更早的轮次按从新到旧装入预算；装不下的整轮折叠成一条「会话摘要」，原始消息仍留在数据库。
+- 技能调用和它的结果必须成对，不会拆开。超长技能结果在发给模型时截到 1500 字，并标明「结果已截断，完整内容在调用记录」。
+- 中止后如果只留下了没有结果的技能调用，下一轮会补一条「已中断、没有结果」，避免坏掉后续请求。
+
+已有库更新提示词（不改技能绑定）：
+
+```bash
+docker compose exec api node dist/scripts/reseed-agent-prompts.js
+```
+
+容器启动时的 `seed.js` 也会按助手 key 写回这些提示词。本地没跑 Docker 时，在 `services/api` 先 `pnpm test`（含编译）再 `node dist/scripts/reseed-agent-prompts.js`。

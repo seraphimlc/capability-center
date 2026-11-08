@@ -13,6 +13,7 @@ type Conversation = {
   confirm_mode: 'auto' | 'manual';
   show_thinking: boolean;
   agent: { key: string; name: string; suggestions: string[]; unbound: boolean; model_tier: string } | null;
+  store?: { id: string; name: string; platform: string; marketplace?: string | null; status?: string } | null;
   skills: Skill[];
 };
 type Msg = { id: string; role: string; content: string; status?: string; tool_call?: { call_id?: string; tool_key?: string; tool_name?: string; ok?: boolean } | null };
@@ -259,7 +260,7 @@ export default function ChatPage() {
         <header className="flex items-center justify-between border-b border-line px-4 py-3">
           <div>
             <h1 className="font-medium">{conv.agent?.name}</h1>
-            <p className="text-xs text-ink/50">{conv.agent?.model_tier}{conv.agent?.unbound ? ' · 当前助手未绑定技能，仅支持对话' : ''}</p>
+            <p className="text-xs text-ink/50">{conv.agent?.model_tier}{conv.store ? ` · 默认店铺 ${conv.store.name}` : ''}{conv.agent?.unbound ? ' · 当前助手未绑定技能，仅支持对话' : ''}</p>
           </div>
           <button className="btn btn-ghost" disabled={!busy} onClick={() => { void stopOnly(); }}>停止生成</button>
         </header>

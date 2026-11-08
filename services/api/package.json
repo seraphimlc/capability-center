@@ -7,7 +7,7 @@
     "dev": "tsc -p tsconfig.json --watch",
     "start": "node dist/main.js",
     "prisma:generate": "prisma generate",
-    "test": "tsc -p tsconfig.json && node --test dist/domain.test.js"
+    "test": "tsc -p tsconfig.json && node --test dist/domain.test.js dist/chat-context.test.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.716.0",

@@ -8,7 +8,8 @@ import { ModelService, type LlmMessage, type LlmToolCall, type LlmTurn } from '.
 import { WalletService } from './wallet.service';
 import { ApiException } from './errors';
 import type { AuthUser } from './auth.guard';
-import { JsonSchema, modelHoldAmount, modelTurnCredits, whitelabelText } from './domain';
+import { JsonSchema, modelHoldAmount, modelTurnCredits, shanghaiParts, whitelabelText } from './domain';
+import { assembleSystemPrompt, buildModelContext, type TranscriptMessage } from './chat-context';
 import { asJson, flag } from './support.service';
 
 type Send = (event: string, data: unknown) => void;
@@ -85,17 +86,26 @@ export class AgentService {
       where: { conversationId: conversation.id },
       orderBy: { createdAt: 'asc' },
     });
-    const messages: LlmMessage[] = [
-      {
-        role: 'system',
-        content: systemPrompt(agent.systemPrompt, agent.name, llmTools.map((tool) => tool.name)),
-      },
-      ...history.map(toLlm).filter((item): item is LlmMessage => Boolean(item)),
-    ];
-    if (input.attachments.length) {
-      const last = messages[messages.length - 1];
-      if (last?.role === 'user') last.content += `\n附件文件：${input.attachments.join(' ')}`;
+    const transcript: TranscriptMessage[] = [];
+    for (const row of history) {
+      const item = toTranscript(row);
+      if (item) transcript.push(item);
     }
+    const lastUser = transcript[transcript.length - 1];
+    if (input.attachments.length && lastUser?.role === 'user') {
+      lastUser.content += `\n附件文件：${input.attachments.join(' ')}`;
+    }
+    const today = shanghaiParts();
+    const store = await this.conversationStore(input.user.id, conversation.storeId);
+    const system = assembleSystemPrompt({
+      base: agent.systemPrompt,
+      name: agent.name,
+      skills: llmTools.map((tool) => ({ name: tool.name, summary: tool.summary })),
+      confirmMode: conversation.confirmMode,
+      store,
+      today: `${today.y}-${today.m}-${today.d}`,
+    });
+    const modelMessages = () => buildModelContext({ system, history: transcript }).messages;
     let produced = '';
     let rounds = 0;
     let degraded = false;
@@ -106,11 +116,12 @@ export class AgentService {
         return;
       }
       const bizId = `${userMessage.id}:${rounds}`;
-      const reservation = await this.reserveModelTurn(input.user, agent, bizId, messages);
+      const windowed = modelMessages();
+      const reservation = await this.reserveModelTurn(input.user, agent, bizId, windowed);
       let turn: LlmTurn;
       try {
         turn = await this.models.runTurn({
-          messages,
+          messages: windowed,
           tools: llmTools,
           primaryModelId: agent.primaryModelId,
           backupModelId: agent.backupModelId,
@@ -156,13 +167,17 @@ export class AgentService {
         const summary = '当前会话未启用该技能';
         input.send('tool_call', card(call, null));
         input.send('tool_result', { call_id: call.id, ok: false, code: 'TOOL_NOT_ALLOWED_IN_SESSION', summary });
-        messages.push(assistantCall(turn.text, call));
-        messages.push({ role: 'tool', tool_call_id: call.id, content: summary });
+        transcript.push(assistantCall(turn.text, call));
+        transcript.push({ role: 'tool', tool_call_id: call.id, tool_name: call.name, content: summary });
         produced = '';
         rounds += 1;
         continue;
       }
       const args = fillFiles(call.arguments, tool.schemaJson as JsonSchema, input.attachments);
+      const wantsStore = tool.storeBound || Boolean((tool.schemaJson as JsonSchema).properties?.store_id);
+      if (conversation.storeId && wantsStore && (args.store_id === undefined || args.store_id === '')) {
+        args.store_id = conversation.storeId;
+      }
       if (conversation.confirmMode === 'manual') {
         await this.saveAssistant(conversation.id, produced || turn.text, 'awaiting_confirm', {
           call_id: call.id,
@@ -181,8 +196,8 @@ export class AgentService {
       const executed = await this.execTool(input, conversation.id, tool, call.id, args);
       input.send('tool_call', { call_id: call.id, tool_key: tool.key, tool_name: tool.name, args });
       input.send('tool_result', executed.event);
-      messages.push(assistantCall(turn.text, { ...call, arguments: args, raw: JSON.stringify(args) }));
-      messages.push({ role: 'tool', tool_call_id: call.id, content: executed.event.summary });
+      transcript.push(assistantCall(turn.text, { ...call, arguments: args, raw: JSON.stringify(args) }));
+      transcript.push({ role: 'tool', tool_call_id: call.id, tool_name: tool.key, content: executed.event.summary });
       if (!executed.event.ok && executed.event.code === 'INSUFFICIENT_CREDITS') {
         await this.saveAssistant(conversation.id, `${produced}\n积分不足，技能未执行。`.trim(), 'complete', null);
         input.send('done', { finish_reason: 'error', version: await this.bump(conversation.id) });
@@ -458,6 +473,20 @@ export class AgentService {
     await this.wallet.releaseKeyed(holdKey);
   }
 
+  private async conversationStore(userId: string, storeId: string | null) {
+    if (!storeId) return null;
+    const shop = await this.prisma.shopAccount.findFirst({
+      where: { id: storeId, userId },
+    });
+    if (!shop) return null;
+    return {
+      name: shop.name,
+      platform: shop.platform,
+      marketplace: shop.marketplace,
+      connected: shop.status === 'connected',
+    };
+  }
+
   private async acquireConversation(id: string): Promise<boolean> {
     for (let attempt = 0; attempt < 30; attempt += 1) {
       const locked = await this.redis.client.set(`lock:conv:${id}`, '1', 'EX', 180, 'NX');
@@ -470,14 +499,12 @@ export class AgentService {
   }
 }
 
-function systemPrompt(base: string, name: string, tools: string[]): string {
-  const skill = tools.length
-    ? `你可以使用这些已启用技能：${tools.join('、')}。需要外部结果时调用技能，不要编造实时数据。`
-    : '当前助手未绑定技能，仅支持对话。不要假装调用外部工具。';
-  return `${base}\n你是「${name}」，服务于能力中心。${skill}\n使用简体中文。不要提及上游供应商名称。积分以人民币口径的整数积分计算。`;
-}
-
-function toLlm(row: { role: string; content: string; toolCallJson: Prisma.JsonValue | null }): LlmMessage | null {
+function toTranscript(row: {
+  role: string;
+  content: string;
+  status: string;
+  toolCallJson: Prisma.JsonValue | null;
+}): TranscriptMessage | null {
   if (row.role === 'user') return { role: 'user', content: row.content };
   if (row.role === 'assistant') {
     const call = row.toolCallJson as { call_id?: string; tool_key?: string; args?: Record<string, unknown> } | null;
@@ -485,19 +512,24 @@ function toLlm(row: { role: string; content: string; toolCallJson: Prisma.JsonVa
       return {
         role: 'assistant',
         content: row.content,
-        tool_calls: [{ id: call.call_id, name: call.tool_key, arguments: JSON.stringify(call.args || {}) }],
+        tool_calls: [{
+          id: call.call_id,
+          name: call.tool_key,
+          arguments: JSON.stringify(call.args || {}),
+          pending: row.status === 'awaiting_confirm',
+        }],
       };
     }
     return { role: 'assistant', content: row.content };
   }
   if (row.role === 'tool') {
-    const call = row.toolCallJson as { call_id?: string } | null;
-    return { role: 'tool', content: row.content, tool_call_id: call?.call_id };
+    const call = row.toolCallJson as { call_id?: string; tool_key?: string } | null;
+    return { role: 'tool', content: row.content, tool_call_id: call?.call_id, tool_name: call?.tool_key };
   }
   return null;
 }
 
-function assistantCall(text: string, call: LlmToolCall): LlmMessage {
+function assistantCall(text: string, call: LlmToolCall): TranscriptMessage {
   return {
     role: 'assistant',
     content: text,
