@@ -1,0 +1,506 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id
+  name      String
+  slug      String   @unique
+  status    String   @default("active")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("tenants")
+}
+
+model User {
+  id           String   @id
+  tenantId     String   @map("tenant_id")
+  email        String   @unique
+  passwordHash String   @map("password_hash")
+  displayName  String   @map("display_name")
+  role         String
+  status       String   @default("active")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model AuthSession {
+  id          String    @id
+  userId      String    @map("user_id")
+  portal      String
+  refreshHash String    @unique @map("refresh_hash")
+  userAgent   String?   @map("user_agent") @db.VarChar(255)
+  ip          String?   @db.VarChar(64)
+  expiresAt   DateTime  @map("expires_at")
+  revokedAt   DateTime? @map("revoked_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("auth_sessions")
+}
+
+model PasswordReset {
+  id        String    @id
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@map("password_resets")
+}
+
+model Wallet {
+  id        String   @id
+  userId    String   @unique @map("user_id")
+  tenantId  String   @map("tenant_id")
+  balance   Int      @default(0)
+  status    String   @default("active")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("wallets")
+}
+
+model CreditHold {
+  id        String   @id
+  walletId  String   @map("wallet_id")
+  userId    String   @map("user_id")
+  tenantId  String   @map("tenant_id")
+  invokeId  String   @unique @map("invoke_id")
+  amount    Int
+  status    String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([walletId, status])
+  @@map("credit_holds")
+}
+
+model LedgerEntry {
+  id           String   @id
+  walletId     String   @map("wallet_id")
+  userId       String   @map("user_id")
+  tenantId     String   @map("tenant_id")
+  type         String
+  amount       Int
+  balanceAfter Int      @map("balance_after")
+  bizType      String   @map("biz_type")
+  bizId        String   @map("biz_id")
+  note         String?  @db.VarChar(500)
+  requestId    String?  @map("request_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([bizType, bizId])
+  @@index([userId, createdAt])
+  @@map("ledger_entries")
+}
+
+model Category {
+  id       String @id
+  tenantId String @map("tenant_id")
+  name     String
+  slug     String
+  sort     Int    @default(0)
+
+  @@unique([tenantId, slug])
+  @@map("categories")
+}
+
+model Connector {
+  id        String   @id
+  tenantId  String   @map("tenant_id")
+  type      String
+  name      String
+  status    String
+  configEnc String   @map("config_enc") @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("connectors")
+}
+
+model Tool {
+  id             String   @id
+  tenantId       String   @map("tenant_id")
+  key            String
+  name           String
+  summary        String   @db.VarChar(500)
+  descriptionMd  String   @map("description_md") @db.Text
+  categoryId     String   @map("category_id")
+  status         String
+  schemaJson     Json     @map("schema_json")
+  examplesJson   Json     @map("examples_json")
+  pricingCredits Int      @map("pricing_credits")
+  connectorId    String   @map("connector_id")
+  upstreamOp     String   @default("run") @map("upstream_op")
+  isAsync        Boolean  @default(false) @map("is_async")
+  capability     String   @default("sync")
+  storeBound      Boolean  @default(false) @map("store_bound")
+  platformsJson  Json     @default("[]") @map("platforms_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([tenantId, key])
+  @@index([status])
+  @@index([storeBound])
+  @@map("tools")
+}
+
+model Favorite {
+  userId    String   @map("user_id")
+  toolId    String   @map("tool_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@id([userId, toolId])
+  @@map("favorites")
+}
+
+model RecentTool {
+  userId String   @map("user_id")
+  toolId String   @map("tool_id")
+  usedAt DateTime @map("used_at")
+
+  @@id([userId, toolId])
+  @@map("recent_tools")
+}
+
+model AiModel {
+  id            String   @id
+  tenantId      String   @map("tenant_id")
+  displayName   String   @map("display_name")
+  capability    String
+  upstreamModel String   @map("upstream_model")
+  status        String
+  timeoutMs     Int      @default(60000) @map("timeout_ms")
+  maxTokens     Int      @default(2048) @map("max_tokens")
+  priceCredits  Int      @default(0) @map("price_credits")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("ai_models")
+}
+
+model Agent {
+  id                  String   @id
+  tenantId            String   @map("tenant_id")
+  key                 String
+  name                String
+  summary             String   @db.VarChar(500)
+  systemPrompt        String   @map("system_prompt") @db.Text
+  status              String
+  primaryModelId      String?  @map("primary_model_id")
+  backupModelId       String?  @map("backup_model_id")
+  suggestions         Json
+  platformsJson       Json     @default("[]") @map("platforms_json")
+  showThinkingDefault Boolean  @default(false) @map("show_thinking_default")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@unique([tenantId, key])
+  @@map("agents")
+}
+
+model AgentTool {
+  agentId String @map("agent_id")
+  toolId  String @map("tool_id")
+
+  @@id([agentId, toolId])
+  @@map("agent_tools")
+}
+
+model Conversation {
+  id           String    @id
+  tenantId     String    @map("tenant_id")
+  userId       String    @map("user_id")
+  agentId      String    @map("agent_id")
+  title        String
+  version      Int       @default(1)
+  confirmMode  String    @default("auto") @map("confirm_mode")
+  showThinking Boolean   @default(false) @map("show_thinking")
+  deletedAt    DateTime? @map("deleted_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([userId, updatedAt])
+  @@map("conversations")
+}
+
+model ConversationSkill {
+  conversationId String  @map("conversation_id")
+  toolId         String  @map("tool_id")
+  enabled        Boolean @default(true)
+
+  @@id([conversationId, toolId])
+  @@map("conversation_skills")
+}
+
+model Message {
+  id             String   @id
+  conversationId String   @map("conversation_id")
+  role           String
+  content        String   @db.Text
+  status         String   @default("complete")
+  toolCallJson   Json?    @map("tool_call_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
+model InvokeRecord {
+  id             String    @id
+  tenantId       String    @map("tenant_id")
+  userId         String    @map("user_id")
+  toolId         String    @map("tool_id")
+  toolKey        String    @map("tool_key")
+  source         String
+  status         String
+  inputJson      Json      @map("input_json")
+  outputJson     Json?     @map("output_json")
+  errorCode      String?   @map("error_code")
+  credits        Int       @default(0)
+  requestId      String    @map("request_id")
+  conversationId String?   @map("conversation_id")
+  messageId      String?   @map("message_id")
+  idempotencyKey String?   @map("idempotency_key")
+  taskId         String?   @map("task_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  finishedAt     DateTime? @map("finished_at")
+
+  @@index([userId, createdAt])
+  @@index([toolId, createdAt])
+  @@index([status])
+  @@map("invoke_records")
+}
+
+model IdempotencyRecord {
+  id        String   @id
+  userId    String   @map("user_id")
+  scope     String
+  key        String
+  bodyHash  String   @map("body_hash")
+  response  Json
+  status    Int
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, scope, key])
+  @@map("idempotency_records")
+}
+
+model OssConfig {
+  id               String   @id
+  tenantId         String   @unique @map("tenant_id")
+  provider         String
+  endpoint         String
+  publicEndpoint   String   @map("public_endpoint")
+  region           String
+  bucket           String
+  accessKeyId      String   @map("access_key_id")
+  accessKeySecret  String   @map("access_key_secret") @db.Text
+  prefix           String
+  publicRead       Boolean  @default(false) @map("public_read")
+  signedUrlExpires Int      @default(3600) @map("signed_url_expires")
+  mediaPublicBase  String?  @map("media_public_base")
+  forcePathStyle   Boolean  @default(true) @map("force_path_style")
+  status           String   @default("active")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("oss_configs")
+}
+
+model FileObject {
+  id        String   @id
+  tenantId  String   @map("tenant_id")
+  userId    String   @map("user_id")
+  objectKey String   @map("object_key")
+  mime      String
+  size      Int      @default(0)
+  status    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@map("file_objects")
+}
+
+model StorageQuota {
+  id         String @id
+  userId     String @unique @map("user_id")
+  limitBytes Int    @map("limit_bytes")
+  usedBytes  Int    @default(0) @map("used_bytes")
+
+  @@map("storage_quotas")
+}
+
+model AsyncTask {
+  id        String   @id
+  tenantId  String   @map("tenant_id")
+  userId    String   @map("user_id")
+  type      String
+  status    String
+  progress  Int      @default(0)
+  invokeId  String?  @map("invoke_id")
+  payload   Json
+  result    Json?
+  errorCode String?  @map("error_code")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("async_tasks")
+}
+
+model ApiKey {
+  id          String    @id
+  userId      String    @map("user_id")
+  tenantId    String    @map("tenant_id")
+  name        String
+  env         String
+  keyPrefix   String    @map("key_prefix")
+  keyHash     String    @map("key_hash")
+  scopes      Json
+  ipAllowlist Json      @map("ip_allowlist")
+  status      String
+  expiresAt   DateTime? @map("expires_at")
+  lastUsedAt  DateTime? @map("last_used_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([keyPrefix])
+  @@map("api_keys")
+}
+
+model InboxMessage {
+  id        String    @id
+  userId    String    @map("user_id")
+  title     String
+  body      String    @db.Text
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("inbox_messages")
+}
+
+model MessageTemplate {
+  id      String @id
+  code    String @unique
+  title   String
+  body    String @db.Text
+  channel String @default("inbox")
+
+  @@map("message_templates")
+}
+
+model AuditEvent {
+  id         String   @id
+  tenantId   String   @map("tenant_id")
+  actorId    String?  @map("actor_id")
+  action     String
+  targetType String   @map("target_type")
+  targetId   String?  @map("target_id")
+  detail     Json?
+  requestId  String?  @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([actorId])
+  @@map("audit_events")
+}
+
+model RateLimitRule {
+  id        String  @id
+  scope     String  @unique
+  limit     Int
+  windowSec Int     @map("window_sec")
+  enabled   Boolean @default(true)
+
+  @@map("rate_limit_rules")
+}
+
+model FeatureFlag {
+  key   String @id
+  value String
+
+  @@map("feature_flags")
+}
+
+model Announcement {
+  id        String   @id
+  title     String
+  body      String   @db.Text
+  published Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("announcements")
+}
+
+model AdjustmentTicket {
+  id         String   @id
+  tenantId   String   @map("tenant_id")
+  userId     String   @map("user_id")
+  invokeId   String?  @map("invoke_id")
+  reason     String   @db.Text
+  status     String   @default("open")
+  resolution String?  @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("adjustment_tickets")
+}
+
+model OutboxEvent {
+  id        String   @id
+  type      String
+  payload   Json
+  status    String   @default("pending")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("outbox_events")
+}
+
+
+model ShopAccount {
+  id              String    @id
+  tenantId        String    @map("tenant_id")
+  userId          String    @map("user_id")
+  platform        String
+  name            String
+  externalStoreId String?   @map("external_store_id")
+  marketplace     String?   
+  authType        String    @default("api_key") @map("auth_type")
+  status          String    @default("draft")
+  credentialsEnc  String    @map("credentials_enc") @db.Text
+  metaJson        Json      @default("{}") @map("meta_json")
+  lastCheckedAt   DateTime? @map("last_checked_at")
+  errorMessage    String?   @map("error_message") @db.Text
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([tenantId, userId])
+  @@index([platform, status])
+  @@unique([tenantId, userId, platform, name])
+  @@map("shop_accounts")
+}
+
+model ModelCallLog {
+  id               String   @id
+  tenantId         String   @map("tenant_id")
+  userId           String   @map("user_id")
+  modelId          String?  @map("model_id")
+  provider         String
+  promptTokens     Int      @default(0) @map("prompt_tokens")
+  completionTokens Int      @default(0) @map("completion_tokens")
+  totalTokens      Int      @default(0) @map("total_tokens")
+  latencyMs        Int      @default(0) @map("latency_ms")
+  status           String
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@map("model_call_logs")
+}

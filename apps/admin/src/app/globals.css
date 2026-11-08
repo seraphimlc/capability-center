@@ -1,0 +1,10 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body { background: #f6f3ee; color: #14211c; }
+.btn { @apply inline-flex items-center justify-center rounded-lg px-3 py-2 text-sm font-medium disabled:opacity-50; }
+.btn-primary { @apply bg-ink text-white; }
+.btn-ghost { @apply border border-line bg-white; }
+.field { @apply w-full rounded-lg border border-line bg-white px-3 py-2 text-sm outline-none; }
+.card { @apply rounded-xl border border-line bg-white; }

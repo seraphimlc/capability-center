@@ -1,0 +1,15 @@
+node_modules
+dist
+.next
+.turbo
+coverage
+.env
+.env.local
+.env.*.local
+data
+*.log
+.DS_Store
+uploads
+.prisma
+.secrets/
+*.tsbuildinfo

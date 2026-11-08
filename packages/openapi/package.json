@@ -1,0 +1,6 @@
+{
+  "name": "@cc/openapi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "能力中心 OpenAPI 契约（M1 骨架，随实现补全）"
+}

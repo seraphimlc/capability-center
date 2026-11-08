@@ -1,0 +1,146 @@
+openapi: 3.0.3
+info:
+  title: 能力中心 API
+  version: 0.1.0
+  description: |
+    M1 契约骨架。成功响应为 `{ ok, request_id, data, meta? }`，失败为 `{ ok:false, request_id, error:{ code, message, details, retryable } }`。
+    用户可见文案不得包含上游供应商品牌。积分仅人民币口径。
+servers:
+  - url: https://api.visitworlds.me
+  - url: http://localhost:8890
+paths:
+  /healthz:
+    get:
+      summary: 健康检查
+      responses:
+        '200':
+          description: ok
+  /api/www/auth/register:
+    post:
+      summary: 邮箱注册
+      responses:
+        '200': { description: 创建用户并返回 access token }
+  /api/www/auth/login:
+    post:
+      summary: 用户端登录
+      responses:
+        '200': { description: access token，refresh 写入 HttpOnly Cookie cc_www_rt }
+  /api/admin/auth/login:
+    post:
+      summary: 管理端登录
+      responses:
+        '200': { description: Cookie cc_admin_rt }
+  /api/www/tools:
+    get:
+      summary: 已发布能力目录
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: category
+          schema: { type: string }
+        - in: query
+          name: favorite
+          schema: { type: string }
+      responses:
+        '200': { description: 工具列表 }
+  /api/www/tools/{toolKey}:
+    get:
+      summary: 工具详情
+      parameters:
+        - in: path
+          name: toolKey
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: 详情 }
+  /api/www/invokes:
+    post:
+      summary: 点选调用
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool_key, input]
+              properties:
+                tool_key: { type: string }
+                input: { type: object }
+      responses:
+        '200': { description: 同步成功 }
+        '202': { description: 异步任务已创建 }
+        '402': { description: INSUFFICIENT_CREDITS }
+  /api/www/conversations/{id}/chat:
+    post:
+      summary: 发送消息并以 SSE 返回
+      responses:
+        '200':
+          description: text/event-stream（meta/delta/thinking/tool_call/tool_result/tool_confirm_required/notice/error/done）
+  /api/www/files/presign:
+    post:
+      summary: 申请预签名上传
+      responses:
+        '200': { description: upload_url + file_id }
+  /api/www/files/{id}/complete:
+    post:
+      summary: 确认上传完成
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: 文件就绪 }
+  /api/admin/wallet/grant:
+    post:
+      summary: 手动充值
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: 余额增加 }
+  /v1/tools:
+    get:
+      summary: 开放平台工具列表
+      security: [{ ApiKey: [] }]
+      responses:
+        '200': { description: 白标工具 }
+  /v1/invokes:
+    post:
+      summary: 开放平台调用
+      security: [{ ApiKey: [] }]
+      responses:
+        '200': { description: 与点选共用钱包 }
+  /mcp:
+    post:
+      summary: MCP streamable HTTP（tools/list、tools/call）
+      security: [{ ApiKey: [] }]
+      responses:
+        '200': { description: JSON-RPC }
+components:
+  securitySchemes:
+    ApiKey:
+      type: http
+      scheme: bearer
+      description: ck_sandbox|prod_<publicId>_<secret>
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        ok: { type: boolean }
+        request_id: { type: string }
+        data: {}
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            retryable: { type: boolean }

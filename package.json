@@ -1,0 +1,25 @@
+{
+  "name": "capability-center",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.33.4",
+  "scripts": {
+    "build": "pnpm --filter @cc/error-codes build && pnpm --filter @cc/api prisma:generate && pnpm --filter @cc/api build && pnpm --filter @cc/www build && pnpm --filter @cc/admin build",
+    "test": "pnpm --filter @cc/api test",
+    "dev:api": "pnpm --filter @cc/api dev",
+    "dev:www": "pnpm --filter @cc/www dev",
+    "dev:admin": "pnpm --filter @cc/admin dev"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@nestjs/core",
+      "@prisma/client",
+      "@prisma/engines",
+      "prisma",
+      "msgpackr-extract"
+    ]
+  }
+}
