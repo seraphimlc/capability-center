@@ -37,6 +37,7 @@ docker compose exec api node dist/scripts/reseed-agent-prompts.js
 1. 镜像站 `docker.m.daocloud.io` 拉 `node:22-alpine` 可能 401，全量 `compose build` 会失败。用第 7 节的增量 Dockerfile，基于本机已有镜像。
 2. 商品目录、订单管理：下一轮，见 `docs/DECISIONS.md`。
 3. 对话模型种子标价是 0。不改管理端标价就看不到模型扣款。
+4. www Docker 必须用前端自带的 `apps/www/src/lib/chat-ux.ts`，不能从 `services/api/src` 跨包导入（镜像里没有 API 源码）。
 
 下文是更早的架构和运维细节，仍然有效。
 
