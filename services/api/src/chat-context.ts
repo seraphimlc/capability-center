@@ -1,3 +1,4 @@
+import { whitelabelText } from './domain';
 import type { LlmMessage } from './model.service';
 
 /**
@@ -47,13 +48,20 @@ export function assembleSystemPrompt(input: {
   confirmMode: string;
   store?: { name: string; platform: string; marketplace?: string | null; connected?: boolean } | null;
   today: string;
+  runtime?: 'live' | 'demo';
 }): string {
   const skills = input.skills.length
     ? input.skills.map((skill) => `- ${skill.name}：${skill.summary || '已启用'}`).join('\n')
-    : '当前没有启用技能。不要假装调用了技能，也不要编造本应由技能返回的实时数据。';
+    : '当前没有启用技能。不要假装调用了技能，也不要编造销量、价格、库存、订单或排名。';
   const confirm = input.confirmMode === 'manual'
     ? '技能确认：每次调用技能前需要用户确认。先说明要调用哪一项、用什么参数。'
     : '技能确认：已启用技能可以直接调用，不必先询问是否允许。';
+  const numbers = input.skills.length
+    ? '数据纪律：销量、价格、库存、订单、广告花费和排名只能引用本轮技能结果里的数字。没查到就写未查到，不要编造。'
+    : '数据纪律：没有启用技能，不能提供实时经营数字。';
+  const channel = input.runtime === 'demo'
+    ? '运行通道：当前是本地演示回复，不代表店铺实时数据。'
+    : '运行通道：已连接模型。仍然不得编造技能没有返回的实时数字。';
   const store = describeStore(input.store);
   return [
     input.base.trim(),
@@ -64,10 +72,45 @@ export function assembleSystemPrompt(input: {
       confirm,
       '已启用技能：',
       skills,
+      numbers,
+      channel,
       store,
       '积分以人民币口径的整数积分计算。不要提及上游供应商品牌或原始接口名称。',
     ].join('\n'),
   ].join('\n\n');
+}
+
+const CHAT_ERROR_TEXT: Record<string, string> = {
+  MODEL_UNAVAILABLE: '模型暂时不可用，请稍后再试',
+  INSUFFICIENT_CREDITS: '积分不足，请联系管理员充值',
+  DEPENDENCY_TIMEOUT: '处理超时，请重试',
+  UPSTREAM_ERROR: '能力执行失败，请稍后重试',
+  WALLET_FROZEN: '钱包已冻结，请联系管理员',
+  CONTENT_BLOCKED: '内容未通过安全审核',
+  MESSAGE_EMPTY: '消息不能为空',
+  STREAM_ABORTED: '已停止生成',
+};
+
+export function chatErrorMessage(code: string | undefined, fallback?: string): string {
+  const mapped = (code && CHAT_ERROR_TEXT[code]) || fallback || '生成失败';
+  return whitelabelText(mapped);
+}
+
+/** First user message renames a still-default conversation. Later messages and custom titles stay. */
+export function conversationTitleFromMessage(
+  currentTitle: string,
+  agentName: string,
+  content: string,
+  priorUserMessages: number,
+): string | null {
+  if (priorUserMessages > 0) return null;
+  const current = currentTitle.trim();
+  if (current && current !== agentName.trim() && current !== '新会话') return null;
+  const compact = content.replace(/\s+/g, ' ').trim();
+  if (!compact) return null;
+  const chars = Array.from(compact);
+  const title = chars.length > 24 ? `${chars.slice(0, 24).join('')}…` : compact;
+  return title === current ? null : title;
 }
 
 export function buildModelContext(input: {

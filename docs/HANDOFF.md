@@ -242,7 +242,23 @@ docker compose up -d
 2. 上一条还在吐字时再 Enter：上一条停止，新消息马上开始，不会等上一条说完。
 3. 只点「停止生成」时，当前回复停止，输入框里的草稿还在。
 4. 管理端把对话模型的积分标价改成大于 0，再发一条。钱包流水是 `model` 扣减。再成功调用一个收费技能，流水仍是 `invoke`。
-5. 要走真实模型：按上面的顺序先起代理，再在 `.env` 放密钥，然后重建 / 重启 api。不放密钥时会话仍是 mock 流式回复。
+5. 要走真实模型：按上面的顺序先起代理，再在 `.env` 放密钥，然后重建 / 重启 api。不放密钥时会话仍是 mock 流式回复，页面会提示「当前是本地演示回复」。
+6. 第一条用户消息会把仍是助手名的会话标题改成这句话的前 24 字。已经改过的标题不会被动。
+7. 模型不可用、处理超时、积分不足都是中文错误，不出现供应商品牌。失败且服务端没收下这条消息时，原文回到输入框，再发不会多出一条用户记录。
+8. 右侧技能勾选从下一条消息起生效。未绑定技能的助手只对话。手动确认选拒绝后，会话里留下「已取消、不扣积分」，不再停在待确认。
+
+### :8888 验收
+
+```bash
+docker compose up -d
+docker compose exec api node dist/scripts/reseed-agent-prompts.js
+# 真实模型（Docker Desktop for Mac）先：
+# node scripts/xy-llm-proxy.mjs
+# cp docker-compose.override.yml.example docker-compose.override.yml
+# 密钥只写 .env 的 LLM_API_KEY 或 XY_API_KEY
+```
+
+打开 http://127.0.0.1:8888 ，用 `demo@visitworlds.me` / `Demo123456` 进入任一助手。空会话能看到该助手的建议。Enter 发送，Shift+Enter 换行。生成中再 Enter 会停掉上一条再发。停止按钮只停止。结束后回复留在记录里，输入框上方的逐字内容消失。从店铺工作台进入的会话显示默认店铺名。
 
 ## 11. 助手提示词与会话上下文
 

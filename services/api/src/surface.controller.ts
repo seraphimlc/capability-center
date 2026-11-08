@@ -6,6 +6,7 @@ import { RedisService } from './redis.service';
 import { InvokeService } from './invoke.service';
 import { FileService } from './file.service';
 import { AgentService, toMessage } from './agent.service';
+import { chatErrorMessage } from './chat-context';
 import { StoreService } from './store.service';
 import { KeyService } from './key.service';
 import { WalletService } from './wallet.service';
@@ -362,7 +363,7 @@ export class AgentController {
         const parsed = errorBody(error);
         send('error', {
           code: parsed.code,
-          message: parsed.message,
+          message: chatErrorMessage(parsed.code, parsed.message),
           request_id: req.requestId,
           ...(parsed.details ? { details: parsed.details } : {}),
         });

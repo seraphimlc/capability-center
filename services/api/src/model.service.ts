@@ -105,12 +105,14 @@ export class ModelService {
       if (input.signal.aborted) {
         return emptyTurn(runtime.provider, primary?.displayName || '标准对话', true, primary?.id ?? null);
       }
+      if (isTimeoutError(error)) throw new ApiException('DEPENDENCY_TIMEOUT', '处理超时，请重试');
       if (backup && backup.id !== primary?.id) {
         try {
           const turn = await this.remoteTurn(runtime, backup, input, true);
           return turn;
         } catch (backupError) {
           if (input.signal.aborted) return emptyTurn(runtime.provider, backup.displayName, true, backup.id);
+          if (isTimeoutError(backupError)) throw new ApiException('DEPENDENCY_TIMEOUT', '处理超时，请重试');
           console.error('model backup failed', whitelabelText(backupError instanceof Error ? backupError.message : 'error'));
         }
       }
@@ -423,6 +425,14 @@ function emptyTurn(provider: string, displayName: string, aborted: boolean, mode
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTimeoutError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = (error as { name?: string }).name || '';
+  if (name === 'TimeoutError') return true;
+  const message = error instanceof Error ? error.message : '';
+  return name === 'AbortError' && /timeout|timed out/i.test(message);
 }
 
 void asJson;

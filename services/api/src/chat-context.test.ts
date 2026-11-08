@@ -8,6 +8,8 @@ import {
   TOOL_TRUNCATED,
   assembleSystemPrompt,
   buildModelContext,
+  chatErrorMessage,
+  conversationTitleFromMessage,
   estimateTokens,
   type TranscriptMessage,
 } from './chat-context';
@@ -43,6 +45,23 @@ test('system prompt injects runtime facts', () => {
   assert.match(text, /亚马逊/);
   assert.match(text, /2026-11-08/);
   assert.match(text, /整数积分/);
+  assert.match(text, /只能引用本轮技能结果里的数字/);
+});
+
+test('chat errors stay in Chinese and drop vendor names', () => {
+  assert.equal(chatErrorMessage('MODEL_UNAVAILABLE'), '模型暂时不可用，请稍后再试');
+  assert.equal(chatErrorMessage('DEPENDENCY_TIMEOUT'), '处理超时，请重试');
+  assert.equal(chatErrorMessage('INSUFFICIENT_CREDITS'), '积分不足，请联系管理员充值');
+  assert.equal(chatErrorMessage('UPSTREAM_ERROR', 'LinkFox gateway failed'), '能力执行失败，请稍后重试');
+  assert.match(chatErrorMessage(undefined, 'see https://api.xytoken.xyb2b.com/v1'), /上游服务/);
+});
+
+test('first user message titles a default conversation', () => {
+  assert.equal(conversationTitleFromMessage('选品顾问', '选品顾问', '  露营灯利润怎么算  ', 0), '露营灯利润怎么算');
+  assert.equal(conversationTitleFromMessage('选品顾问', '选品顾问', '露营灯利润怎么算', 1), null);
+  assert.equal(conversationTitleFromMessage('我的标题', '选品顾问', '另一句', 0), null);
+  const long = '甲'.repeat(30);
+  assert.equal(conversationTitleFromMessage('新会话', '选品顾问', long, 0)?.length, 25);
 });
 
 test('short history stays verbatim under the default budget', () => {

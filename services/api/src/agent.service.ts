@@ -4,12 +4,12 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from './prisma.service';
 import { RedisService } from './redis.service';
 import { InvokeService } from './invoke.service';
-import { ModelService, type LlmMessage, type LlmToolCall, type LlmTurn } from './model.service';
+import { ModelService, readLlmRuntime, type LlmMessage, type LlmToolCall, type LlmTurn } from './model.service';
 import { WalletService } from './wallet.service';
 import { ApiException } from './errors';
 import type { AuthUser } from './auth.guard';
 import { JsonSchema, modelHoldAmount, modelTurnCredits, shanghaiParts, whitelabelText } from './domain';
-import { assembleSystemPrompt, buildModelContext, type TranscriptMessage } from './chat-context';
+import { assembleSystemPrompt, buildModelContext, conversationTitleFromMessage, type TranscriptMessage } from './chat-context';
 import { asJson, flag } from './support.service';
 
 type Send = (event: string, data: unknown) => void;
@@ -64,6 +64,7 @@ export class AgentService {
     if (isBlocked(content)) throw new ApiException('CONTENT_BLOCKED');
     const agent = await this.prisma.agent.findUnique({ where: { id: conversation.agentId } });
     if (!agent || agent.status !== 'published') throw new ApiException('AGENT_NOT_PUBLISHED');
+    const priorUsers = await this.prisma.message.count({ where: { conversationId: conversation.id, role: 'user' } });
     const userMessage = await this.prisma.message.create({
       data: {
         id: ulid(),
@@ -74,7 +75,14 @@ export class AgentService {
         toolCallJson: input.attachments.length ? asJson({ attachments: input.attachments }) : undefined,
       },
     });
+    const nextTitle = conversationTitleFromMessage(conversation.title, agent.name, content, priorUsers);
+    if (nextTitle) {
+      await this.prisma.conversation.update({ where: { id: conversation.id }, data: { title: nextTitle } });
+    }
     input.send('meta', { user_message_id: userMessage.id, assistant_message_id: null, version: conversation.version });
+    if (readLlmRuntime().provider === 'mock') {
+      input.send('notice', { code: 'MODEL_DEMO', message: '当前是本地演示回复，不代表店铺实时数据。' });
+    }
     const enabled = await this.enabledTools(conversation.id, agent.id);
     const llmTools = enabled.map((tool) => ({
       key: tool.key,
@@ -104,6 +112,7 @@ export class AgentService {
       confirmMode: conversation.confirmMode,
       store,
       today: `${today.y}-${today.m}-${today.d}`,
+      runtime: readLlmRuntime().provider === 'mock' ? 'demo' : 'live',
     });
     const modelMessages = () => buildModelContext({ system, history: transcript }).messages;
     let produced = '';
@@ -222,20 +231,18 @@ export class AgentService {
     const call = pending?.toolCallJson as { call_id?: string; tool_key?: string; args?: Record<string, unknown>; tool_name?: string } | null;
     if (!pending || !call?.call_id || call.call_id !== body.call_id) throw new ApiException('CONFLICT', '没有待确认的技能调用');
     if (body.decision === 'reject') {
-      await this.prisma.message.update({
+      const kept = pending.content.trim();
+      const note = await this.prisma.message.update({
         where: { id: pending.id },
-        data: { status: 'complete', content: `${pending.content}\n已拒绝本次技能调用。`.trim() },
-      });
-      const note = await this.prisma.message.create({
         data: {
-          id: ulid(),
-          conversationId,
-          role: 'assistant',
-          content: '好的，已取消这次技能调用，不会扣减积分。',
           status: 'complete',
+          toolCallJson: Prisma.DbNull,
+          content: kept
+            ? `${kept}\n\n已取消这次技能调用，没有执行，也不会扣积分。`
+            : '已取消这次技能调用，没有执行，也不会扣积分。',
         },
       });
-      return { messages: [toMessage(pending), toMessage(note)], version: await this.bump(conversationId) };
+      return { messages: [toMessage(note)], version: await this.bump(conversationId) };
     }
     const tool = await this.prisma.tool.findFirst({ where: { tenantId: user.tenantId, key: call.tool_key, status: 'published' } });
     if (!tool) throw new ApiException('TOOL_NOT_PUBLISHED');

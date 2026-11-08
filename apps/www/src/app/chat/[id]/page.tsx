@@ -12,11 +12,11 @@ type Conversation = {
   version: number;
   confirm_mode: 'auto' | 'manual';
   show_thinking: boolean;
-  agent: { key: string; name: string; suggestions: string[]; unbound: boolean; model_tier: string } | null;
+  agent: { key: string; name: string; summary?: string; suggestions: string[]; unbound: boolean; model_tier: string } | null;
   store?: { id: string; name: string; platform: string; marketplace?: string | null; status?: string } | null;
   skills: Skill[];
 };
-type Msg = { id: string; role: string; content: string; status?: string; tool_call?: { call_id?: string; tool_key?: string; tool_name?: string; ok?: boolean } | null };
+type Msg = { id: string; role: string; content: string; status?: string; tool_call?: { call_id?: string; tool_key?: string; tool_name?: string; ok?: boolean; args?: unknown } | null };
 type ToolCard = { call_id: string; tool_key: string; tool_name?: string; args?: unknown; status: string; summary?: string };
 type Draft = { content: string; file: string };
 
@@ -33,6 +33,7 @@ export default function ChatPage() {
   const [busy, setBusy] = useState(false);
   const [handoff, setHandoff] = useState(false);
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
   const [fileId, setFileId] = useState('');
   const box = useRef<HTMLDivElement>(null);
   const composing = useRef(false);
@@ -43,18 +44,20 @@ export default function ChatPage() {
   const needsStopRef = useRef(false);
   const epochRef = useRef(0);
   const conversationIdRef = useRef(params.id);
+  const sendGen = useRef(0);
   conversationIdRef.current = params.id;
 
-  async function load(id = params.id) {
-    const [detail, list, history] = await Promise.all([
-      api<Conversation>(`/api/www/conversations/${id}`),
-      api<{ items: { id: string; title: string; agent_name?: string }[] }>('/api/www/conversations'),
-      api<{ items: Msg[] }>(`/api/www/conversations/${id}/messages`),
-    ]);
+  function applySnapshot(id: string, snap: Snapshot) {
     if (conversationIdRef.current !== id) return;
-    setConv(detail);
-    setSessions(list.items);
-    setMessages(history.items);
+    setConv(snap.detail);
+    setSessions(snap.sessions);
+    setMessages(snap.messages);
+    setPending(confirmCard(snap.messages));
+  }
+
+  async function load(id = params.id) {
+    const snap = await fetchConversation(id);
+    applySnapshot(id, snap);
   }
 
   useEffect(() => {
@@ -160,16 +163,19 @@ export default function ChatPage() {
 
   async function performSend(content: string, file: string, ticket: number) {
     const id = params.id;
+    const gen = ++sendGen.current;
     const controller = new AbortController();
     abortRef.current = controller;
+    setNotice('');
     setLive('');
     setThinking('');
     setCards([]);
     setPending(null);
-    setMessages((rows) => [...rows, { id: `local-${Date.now()}`, role: 'user', content: content || '（附件）' }]);
+    setMessages((rows) => [...rows, { id: `local-${gen}`, role: 'user', content: content || '（附件）' }]);
+    let accepted = false;
     try {
       const response = await postChat(id, content, file, controller.signal);
-      if (epochRef.current !== ticket) return;
+      if (epochRef.current !== ticket || sendGen.current !== gen) return;
       if (response.status === 401) {
         const refreshed = await fetch('/api/www/auth/refresh', { method: 'POST', credentials: 'include' });
         const body = await refreshed.json().catch(() => null);
@@ -185,12 +191,13 @@ export default function ChatPage() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buf = '';
-      while (!controller.signal.aborted && epochRef.current === ticket) {
+      while (!controller.signal.aborted && epochRef.current === ticket && sendGen.current === gen) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
         buf = readSse(buf, (event, data) => {
-          if (epochRef.current !== ticket) return;
+          if (epochRef.current !== ticket || sendGen.current !== gen) return;
+          if (event === 'meta') accepted = true;
           if (event === 'delta') setLive((value) => value + String(data.text || ''));
           if (event === 'thinking') setThinking((value) => value + String(data.text || ''));
           if (event === 'tool_call') {
@@ -203,23 +210,25 @@ export default function ChatPage() {
             setPending({ call_id: String(data.call_id), tool_key: String(data.tool_key), tool_name: String(data.tool_name || ''), args: data.args, status: 'confirm' });
           }
           if (event === 'error') setError(formatChatError(data, '生成失败'));
-          if (event === 'notice') setError(String(data.message || ''));
+          if (event === 'notice') setNotice(scrubVendor(String(data.message || '')));
         });
       }
       if (controller.signal.aborted || epochRef.current !== ticket) {
         await reader.cancel().catch(() => undefined);
       }
     } catch (error) {
-      if (!isAbort(error) && epochRef.current === ticket) {
-        setError(error instanceof Error ? error.message : '发送失败');
+      if (!isAbort(error) && epochRef.current === ticket && sendGen.current === gen) {
+        setError(scrubVendor(error instanceof Error ? error.message : '发送失败'));
       }
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
-      // A newer draft is about to post; let that turn refresh history.
-      if (!queuedRef.current && conversationIdRef.current === id) {
-        setLive('');
-        await load(id).catch(() => undefined);
-      }
+      if (queuedRef.current || conversationIdRef.current !== id || sendGen.current !== gen) return;
+      const snap = await fetchConversation(id).catch(() => null);
+      if (!snap || queuedRef.current || conversationIdRef.current !== id || sendGen.current !== gen) return;
+      applySnapshot(id, snap);
+      setLive('');
+      setThinking('');
+      if (!accepted && !controller.signal.aborted && epochRef.current === ticket) restoreDraft({ content, file });
     }
   }
 
@@ -267,12 +276,14 @@ export default function ChatPage() {
         <div ref={box} className="flex-1 space-y-3 overflow-auto px-4 py-4">
           {messages.length === 0 && !live ? (
             <div>
-              <p className="text-sm text-ink/60">可以点一条建议开始。</p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                {(conv.agent?.suggestions || []).map((prompt) => (
-                  <button key={prompt} className="btn btn-ghost" type="button" onClick={() => send(prompt)}>{prompt}</button>
-                ))}
-              </div>
+              <p className="text-sm text-ink/70">{emptyLead(conv)}</p>
+              {(conv.agent?.suggestions || []).length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {(conv.agent?.suggestions || []).map((prompt) => (
+                    <button key={prompt} className="btn btn-ghost" type="button" onClick={() => send(prompt)}>{prompt}</button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
           {messages.map((message) => (
@@ -303,6 +314,7 @@ export default function ChatPage() {
               </div>
             </div>
           ) : null}
+          {notice ? <p className="text-xs text-ink/50">{notice}</p> : null}
           {error ? <p className="text-sm text-clay">{error}</p> : null}
         </div>
         <form className="border-t border-line p-3" onSubmit={(event: FormEvent) => { event.preventDefault(); send(text); }}>
@@ -331,7 +343,8 @@ export default function ChatPage() {
       </section>
       <aside className="card h-fit p-4 text-sm">
         <h2 className="font-medium">本会话技能</h2>
-        {conv.agent?.unbound ? <p className="mt-2 text-ink/60">当前助手未绑定技能，仅支持对话。</p> : null}
+        <p className="mt-1 text-xs text-ink/45">勾选从下一条消息起生效。</p>
+        {conv.agent?.unbound ? <p className="mt-2 text-ink/60">当前助手未绑定技能，只会对话，不会调用工具。</p> : null}
         <div className="mt-3 space-y-2">
           {conv.skills.map((skill) => (
             <label key={skill.tool_id} className="flex items-start gap-2">
@@ -398,13 +411,83 @@ function postChat(id: string, content: string, file: string, signal: AbortSignal
   })();
 }
 
+type Snapshot = { detail: Conversation; sessions: { id: string; title: string; agent_name?: string }[]; messages: Msg[] };
+
+async function fetchConversation(id: string): Promise<Snapshot> {
+  const [detail, list, history] = await Promise.all([
+    api<Conversation>(`/api/www/conversations/${id}`),
+    api<{ items: { id: string; title: string; agent_name?: string }[] }>('/api/www/conversations'),
+    api<{ items: Msg[] }>(`/api/www/conversations/${id}/messages`),
+  ]);
+  return { detail, sessions: list.items, messages: history.items };
+}
+
+function confirmCard(items: Msg[]): ToolCard | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const message = items[index];
+    const call = message.tool_call;
+    if (message.status === 'awaiting_confirm' && call?.call_id && call.tool_key) {
+      return {
+        call_id: call.call_id,
+        tool_key: call.tool_key,
+        tool_name: call.tool_name || call.tool_key,
+        args: call.args,
+        status: 'confirm',
+      };
+    }
+  }
+  return null;
+}
+
+const EMPTY_LEAD: Record<string, string> = {
+  'buyer-assistant': '告诉我品类、站点或成本，我帮你判断做不做。',
+  'studio-assistant': '给我商品和平台，我帮你整理能直接用的文案或画面说明。',
+  'ops-assistant': '说下要看的店铺、链接或这周的问题，我按优先级给动作。',
+  'desk-assistant': '我可以说明能力中心怎么用、积分怎么算。这里不查店铺实时数据。',
+  'amazon-store-assistant': '从库存、Listing、广告或竞品里选一件今天要处理的事。',
+  'shopify-store-assistant': '说下商品和你想提高的转化点，我按独立站页面来整理。',
+  'temu-store-assistant': '说下站点、订单或上架问题，我按这家店的待办来排。',
+  'ebay-store-assistant': '给我站点、关键词或一条刊登，我帮你改到能发出去。',
+  'shopee-store-assistant': '说下站点、账户健康或买家问题，我按虾皮店铺来处理。',
+  'tiktok-shop-assistant': '给我商品和想拍的点，我帮你收成一条能拍的短视频。',
+  'walmart-store-assistant': '给我商品和成本，我帮你判断值不值得上、刊登该改哪句。',
+  'alibaba1688-store-assistant': '说下要找的货和数量，我帮你收成可以询盘的货源短名单。',
+};
+
+function emptyLead(conv: Conversation): string {
+  if (conv.agent?.unbound) return EMPTY_LEAD['desk-assistant'];
+  return EMPTY_LEAD[conv.agent?.key || ''] || conv.agent?.summary || '直接输入问题，或点一条建议开始。';
+}
+
+const CHAT_ERROR: Record<string, string> = {
+  MODEL_UNAVAILABLE: '模型暂时不可用，请稍后再试',
+  INSUFFICIENT_CREDITS: '积分不足，请联系管理员充值',
+  DEPENDENCY_TIMEOUT: '处理超时，请重试',
+  UPSTREAM_ERROR: '能力执行失败，请稍后重试',
+  WALLET_FROZEN: '钱包已冻结，请联系管理员',
+  CONTENT_BLOCKED: '内容未通过安全审核',
+  MESSAGE_EMPTY: '消息不能为空',
+  STREAM_ABORTED: '已停止生成',
+};
+
 function formatChatError(data: { code?: unknown; message?: unknown; details?: unknown }, fallback: string): string {
-  const message = typeof data.message === 'string' && data.message ? data.message : fallback;
-  if (data.code !== 'INSUFFICIENT_CREDITS') return message;
+  const code = typeof data.code === 'string' ? data.code : '';
+  const mapped = CHAT_ERROR[code];
+  const message = mapped || (typeof data.message === 'string' && data.message ? data.message : fallback);
+  const clean = scrubVendor(message);
+  if (code !== 'INSUFFICIENT_CREDITS') return clean;
   const details = data.details as { balance?: number; required?: number } | undefined;
-  if (!details || typeof details.required !== 'number') return message;
+  if (!details || typeof details.required !== 'number') return clean;
   const balance = typeof details.balance === 'number' ? details.balance : 0;
-  return `${message}（需要 ${details.required} 积分，当前可用 ${balance}）`;
+  return `${clean}（需要 ${details.required} 积分，当前可用 ${balance}）`;
+}
+
+function scrubVendor(text: string): string {
+  return text
+    .replace(/link\s*fox/gi, '上游服务')
+    .replace(/xytoken|xyb2b/gi, '上游服务')
+    .replace(/Wally\s*Smarter/gi, '上游服务')
+    .replace(/\bTsearch\b/gi, '上游服务');
 }
 
 function isAbort(error: unknown): boolean {
