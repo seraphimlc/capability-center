@@ -121,39 +121,42 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 ### 输入
 
 - 关键词（必填）
-- 站点（默认 US）
-- 成本、目标售价（可选）
-- 类目（可选）
-- 结果数量（默认 5）
+- 站点（默认 US；EU→DE，JP→JP，SEA 暂不支持）
+- 类目（可选，默认关键词）
+- 售价 / 货本（可选，填了才做利润）
+- 平台费率 / 头程 / 广告（可选，有默认）
+- 展示条数（默认 5）
+- Listing 文案（可选，填了才做合规）
 
 ### 步骤
 
 ```
-1. 选品简报（product-picker）
-2. 竞品关键词洞察（competitor-insight，可选）
-3. 利润测算（profit-estimator，有成本/售价时）
-4. 季节选品日历（season-calendar）
-5. Listing 合规检查（compliance-check，可选）
-6. 生成选品报告（model）
+1. 选品数据商品搜索（lf-sellersprite-product-search）
+2. 利润测算（profit-estimator，有成本/售价时）
+3. 季节选品日历（season-calendar）
+4. Listing 合规检查（compliance-check，有文案时）
+5. 生成选品报告（model）
+6. 渲染 PDF（HTML → PDF）
 ```
 
 ### 复用能力
 
-`product-picker`、`competitor-insight`、`profit-estimator`、`season-calendar`、`compliance-check`。全部为非绑店工具，第一批不需要店铺授权。
+`lf-sellersprite-product-search`（真实 LinkFox 选品数据）、`profit-estimator`、`season-calendar`、`compliance-check`。全部为非绑店工具，第一批不需要店铺授权。
 
 ### 产物
 
-- 选品报告（Markdown/HTML，存 MinIO）
+- 选品报告（Markdown / HTML / PDF，存 MinIO）
 - 步骤明细（每步工具、入参、结果摘要、耗时、积分）
-- 评分/结论（模型生成，标注“基于工具结果”）
+- 结论（模型生成，标注“基于工具结果”）
 
 ### 验收
 
 - [ ] 用样例输入完整跑通，状态 `succeeded`
-- [ ] 至少 4 个步骤有 invoke 记录
-- [ ] 报告可下载，内容引用工具结果而非编造
-- [ ] 积分按步骤实际扣减，账本可追溯
-- [ ] 任一步失败时整次运行 failed，hold 释放，不扣费
+- [ ] 至少 3 个步骤有 invoke 记录
+- [ ] 市场样本含真实字段：标题、价格、月销量、BSR、评分
+- [ ] 利润数字与 `profit-estimator` 一致
+- [ ] PDF 可下载、中文不乱码
+- [ ] 选品工具失败时整次 failed、hold 释放、不扣费，不降级到演示数据
 - [ ] 企业 A 看不到企业 B 的运行和产物
 
 ---
@@ -162,32 +165,32 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 
 ### 输入
 
-- 关键词 / ASIN / 竞品标题（至少一个）
-- 站点（默认 US）
-- 结果数量（默认 10）
-- 店铺（可选；部分工具需绑店）
+- 搜索关键词（必填）
+- 站点（默认 US；P0 只支持 US）
+- 抓取条数（默认 10）
 
 ### 步骤
 
 ```
-1. 竞品关键词洞察（competitor-insight）
-2. 选品数据竞品查询（lf-sellersprite-competitor-lookup，可选）
-3. 亚马逊商品评论（lf-amazon-reviews-list，可选）
-4. 监控亚马逊竞品动态（lf-expert-amazon-competitor-monitor，需绑店，可选）
-5. 生成竞品报告（model）
+1. 亚马逊前台搜索（lf-amazon-search）
+2. 取标题（transform，截取 N 条）
+3. 竞品关键词洞察（competitor-insight）
+4. 生成竞品报告（model）
+5. 渲染 PDF
 ```
 
 ### 注意
 
-- `lf-expert-amazon-competitor-monitor`、部分 LinkFox 工具是需绑店工具；没有店铺时跳过，不阻断。
-- 先只做“单次洞察”，不做定时监控；定时监控归自动化阶段。
+- **不接受手填竞品标题作为主路径**；搜索失败即 `blocked`，不扣费。
+- 不调用 `lf-amazon-reviews-list`（要 taskId）和 `lf-expert-amazon-competitor-monitor`（30+ 必填字段）。
+- 先只做单次洞察，不做定时监控。
 
 ### 验收
 
-- [ ] 无店铺也能跑通（跳过绑店步骤）
-- [ ] 有店铺时能带上店铺上下文
-- [ ] 报告包含价格/评论/差距/建议，引用工具结果
-- [ ] 可选步骤失败不阻断整次运行
+- [ ] `lf-amazon-search` 成功并拿到标题
+- [ ] 高频词、卖点聚类、缺口、建议齐全
+- [ ] 搜索失败时 `blocked`、不扣费、没有手填兜底入口
+- [ ] PDF 可下载
 - [ ] 积分/审计/隔离同上
 
 ---
@@ -245,7 +248,7 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 
 - [ ] 一个演示企业、两个员工账号（管理员/成员）。
 - [ ] 3 个场景 published，均有专属表单。
-- [ ] 3 个场景各跑成功 1 次，报告可下载。
+- [ ] 3 个场景各跑成功 1 次，报告 PDF 可下载。
 - [ ] 失败路径：任一步失败 → run failed → hold released → 不扣费。
 - [ ] 积分：企业账户扣减、员工发起人记录、账本可查。
 - [ ] 审计：run → steps → invoke/model → ledger/audit 可串联。
@@ -259,13 +262,14 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 
 | 项 | 状态 | 影响 |
 |---|---|---|
-| LinkFox 密钥/额度 | 已配置，部分上游可能鉴权失败 | 场景步骤需可选/降级，不能整单失败 |
+| LinkFox 密钥/额度 | **当前容器未配置**（重建后丢失，实测 503） | 选品/竞品主路径依赖 `lf-sellersprite-product-search` / `lf-amazon-search`；补 `.env` 后重启 api 才能验收；失败时 failed/blocked，不降级到演示数据 |
 | 商标上游额度 | 已耗尽 | 合规场景商标步骤设为可选 |
-| 店铺授权 | 只有演示店铺 | 竞品绑店步骤先跳过或用手动店铺 |
+| 店铺授权 | 只有演示店铺 | P0 三个工作流都不依赖绑店工具，第一批不需要 |
 | 模型 xytoken | 已配置 | 报告生成依赖模型，需超时/备用 |
 | 格兰德数据 | Pending | 第一批不用 |
 | 阿里云邮件 | 未申请 | 第一批不用 |
 | 知识库 | 未建 | 合规报告先用固定规则+模型 |
+| PDF 渲染 | 未实现 | 需要 headless Chromium + 中文字体；首批必须交付 PDF |
 
 ---
 
