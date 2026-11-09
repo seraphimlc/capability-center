@@ -47,7 +47,7 @@ acceptance     验收样例
 - `report.html`：PDF 的中间产物。
 - `report.pdf`：**首批必需**；用 headless Chromium/HTML→PDF 生成，容器需装中文字体（Noto Sans CJK）。
 - `run.json`：步骤、工具、入参、结果摘要、耗时、积分、错误。
-- 产物写 `task_artifacts` + MinIO，按企业隔离。
+- 产物写 `task_artifacts` + MinIO，按用户隔离。
 
 ---
 
@@ -299,7 +299,7 @@ Listing 文案：100% waterproof, best seller, cure your night, guaranteed quali
 
 ## 4. 公共运行逻辑
 
-1. 创建 `scenario_run`：校验输入 → 检查数据源依赖（P0 无 Pending）→ 估算积分 → hold。
+1. 创建 `scenario_run`：校验输入 → 检查数据源依赖（P0 无 Pending）→ 估算积分 → 复用 `WalletService`，按 `scenario:{runId}` hold。
 2. 顺序执行步骤：每步写 `scenario_run_steps`，记录入参、输出摘要、invoke/model id、耗时、成本。
 3. 任一步 required 失败 → 整次 `failed`，释放 hold；已成功步骤保留记录，不扣费。
 4. 全部 required 成功 → 生成报告 → capture → `succeeded`。

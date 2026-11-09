@@ -31,7 +31,7 @@
 | 应用 | App（温州业务层） | 商品库/CRM/营销中心，不进核心模型 |
 | 数据源 | `DataSource` | |
 | 知识库 | `KnowledgeBase` | |
-| 企业 | `Enterprise` | |
+| 企业（账号） | `User` | 一个用户就是一个企业账号，不建企业表 |
 | 积分/套餐 | `CreditAccount` / `Plan` | |
 
 规则：
@@ -250,24 +250,23 @@ apps/www/src/app/ai/
 
 ### 7.3 数据模型（additive）
 
-- `enterprises`、`enterprise_members`：企业、企业成员与角色。
-- `credit_accounts`、`enterprise_credit_holds`、`enterprise_credit_ledger`：企业积分账户与账本。
+- `users` 即企业账号；不建 `enterprises` / `enterprise_members` / 企业钱包。
+- **复用** `wallets`、`credit_holds`、`ledger_entries`；场景 holdKey 用 `scenario:{runId}`。
 - `data_sources`、`data_source_syncs`：海关/采购商/邮件等外部数据源与同步记录。
-- 扩 `agents`：`kind`、输入/输出 schema、可见范围、企业归属；不另建专家表。
+- 扩 `agents`：`kind`、输入/输出 schema、icon、sort；不另建专家表。
 - `scenarios`、`scenario_steps`、`scenario_dependencies`：场景、步骤、数据源依赖。
 - `scenario_runs`、`scenario_run_steps`、`ai_tasks`、`task_artifacts`：运行、步骤、任务、产物。
 - `knowledge_bases`、`knowledge_documents`、`knowledge_chunks`：知识库、文档、分段、向量。
-- `ai_products`、`crm_customers`、`crm_contacts`、`marketing_assets`：AI 应用数据。
+- `ai_products`、`crm_customers`、`crm_contacts`、`marketing_assets`：温州业务层，按 `user_id` 归属。
 - `automation_rules`、`automation_runs`：定时/事件。
-- `subscription_plans`、`enterprise_subscriptions`、`entitlements`、`credit_grants`：套餐与权益。
-- 现有表加可空列：`invoke_records`、`model_call_logs`、`audit_events` 加 `enterprise_id` / `scenario_run_id`；`file_objects` 加 `enterprise_id`。
+- 套餐第一批不做；以后按用户加。
 
-所有表继续带 `tenant_id`，按企业隔离；迁移只加表/加列，不改现有字段语义。完整字段见 [最小数据模型草案](WENZHOU-AI-DATA-MODEL.md)。
+所有表带 `tenant_id`，按 `user_id` 隔离；迁移只加表/加列，不改现有字段语义。完整字段见 [最小数据模型草案](WENZHOU-AI-DATA-MODEL.md)。
 
 ### 7.4 不要做
 
 - 不新建第二套用户/登录。
-- 不新建与个人钱包并行的第二套扣费逻辑；企业积分账户是目标账本，旧个人钱包只做兼容。
+- 不新建企业钱包或第二套扣费逻辑；复用个人钱包，按 `user_id` 扣。
 - 不在场景里直连上游供应商；一律走 `InvokeService` / `McpService`。
 - 不为每个场景写一套工具调用和计费。
 - 不做通用表单搭建器；能力表单仍然一能力一个组件。
@@ -277,7 +276,7 @@ apps/www/src/app/ai/
 
 ## 8. 第一批 vertical slice
 
-第一批只做 3 个场景：**选品、竞品、合规初筛**。它们不依赖格兰德数据、阿里云邮件和知识库，能先把“专家 → 场景 → 任务 → 企业计费 → 审计 → 产物”跑通。
+第一批只做 3 个场景：**选品、竞品、合规初筛**。它们不依赖格兰德数据、阿里云邮件和知识库，能先把“专家 → 场景 → 任务 → 用户钱包计费 → 审计 → 产物”跑通。
 
 具体输入、步骤、报告结构、验收样例见 [P0 三个工作流的配置草案](WENZHOU-AI-P0-CONFIGS.md)。
 
@@ -302,7 +301,7 @@ apps/www/src/app/ai/
 选品和竞品是两个独立工作流；选品不内置竞品洞察，避免重复调用。
 
 - 新增：`scenarios`（选品）、`scenario_runs`、任务页、报告模板。
-- 复用：4–5 个现有工具、`InvokeService`、`BillingService`、`AgentService`、审计。
+- 复用：4–5 个现有工具、`InvokeService`、`WalletService`、`AgentService`、审计。
 - 验收：一次任务能看到步骤、每步调用、总积分、报告、失败释放；不新增任何上游直连代码。
 
 ### 8.2 竞品洞察（P0）
@@ -357,7 +356,7 @@ Listing 合规检查（compliance-check）
 
 | 阶段 | 目标 | 主要交付 |
 |---|---|---|
-| Phase 1 | 底座 + 3 个 P0 工作流 | 企业/积分账户、场景/任务运行、选品与市场分析、竞品洞察、合规初筛、最小管理端 |
+| Phase 1 | 底座 + 3 个 P0 工作流 | 用户钱包复用、场景/任务运行、选品与市场分析、竞品洞察、合规初筛、最小管理端 |
 | Phase 2 | 内容与经营 | 商品内容生产、视觉素材生产、经营诊断、AI 商品库/素材库、合规知识库 |
 | Phase 3 | 客户与交易 | 客户洞察与获客（格兰德）、询盘报价与触达（阿里云邮件）、CRM 轻量版 |
 | Phase 4 | 营销 + 深度模式 + 嵌入式 | 营销内容与社媒、各工作流深度模式、商城/SCM/外综服/数据中台集成 |
@@ -371,9 +370,9 @@ Listing 合规检查（compliance-check）
 | 品牌 / 多语言 | 品牌先叫「能力中心」；不做多语言 |
 | 模型 | 文本走 xytoken；图片/视频先用 LinkFox AIGC 能力 |
 | 助手 → 专家 | 先改用户端/管理端文案和导航，数据库与 API 继续用 `agents` |
-| 租户模型 | 单平台多企业；企业—员工两层；企业管理员管人、管额度、看账单 |
-| 积分 | 企业积分账户 + 员工子额度；对外按任务/场景一次，内部按工具/模型记账 |
-| 套餐 | 平台代开、线下收款；按月过期、不结转、无缓冲 |
+| 租户模型 | 一个用户就是一个企业账号；不做企业管理员/子账号/部门；平台运营管理用户 |
+| 积分 | 复用个人钱包；按 user_id 扣费；不做企业钱包/员工子额度 |
+| 套餐 | 第一批不做；管理端直接充值/调账；以后按用户加 |
 | 数据 | 先新建数据；现有商品/CRM/店铺/订单系统后面再接 |
 | 外部能力 | 优先 LinkFox、创知汇等现有能力；自建放后面 |
 | Pending 数据 | 海关/采购商用格兰德数据；邮件用阿里云邮件服务；相似客户 Pending |
@@ -393,7 +392,7 @@ Listing 合规检查（compliance-check）
 3. **LinkFox 密钥（已配置）**：选品用 `lf-sellersprite-product-search`、竞品用 `lf-amazon-search`，2026-11-09 实测均 200；`size` 需 10–100，`lf-amazon-search` 返回 `products[]`。密钥只放 `.env`。
 4. **模型密钥（已配置并验证）**：`LLM_API_KEY` 已配置，provider=xy、model=deepseek-v4.1-flash，测试返回“模型就绪”。密钥只在 `.env`。
 4. **商标额度**：创知汇当前工具额度已耗尽，需充值或换账号。
-5. **店铺授权**：竞品场景的绑店步骤需要企业真实店铺；没有时先跳过。
+5. **店铺授权**：竞品场景的绑店步骤需要用户真实店铺；没有时先跳过。
 
 ## 12. 配套文档
 

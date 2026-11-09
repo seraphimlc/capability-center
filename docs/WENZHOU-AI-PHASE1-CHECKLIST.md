@@ -15,7 +15,7 @@
 ### 做
 
 - 3 个场景：选品决策、竞品洞察、合规初筛。
-- 企业 + 企业积分账户 + 员工子额度（最小版）。
+- 用户 + 现有个人钱包（直接复用，不建企业/子账号）。
 - 专家/场景/任务/运行步骤/产物。
 - 场景运行 API + 任务页 + 场景卡片。
 - 管理端：场景列表/发布、数据源状态、运行记录（最小版）。
@@ -36,24 +36,23 @@
 
 ### 1.1 数据模型
 
-- [ ] `enterprises`、`enterprise_members`
-- [ ] `credit_accounts`、`enterprise_credit_holds`、`enterprise_credit_ledger`
+- [ ] 不建企业/成员/企业钱包；复用现有 `wallets`、`credit_holds`、`ledger_entries`
 - [ ] `data_sources`（先建表和状态，不接真实数据）
 - [ ] `scenarios`、`scenario_steps`、`scenario_dependencies`、`scenario_runs`、`scenario_run_steps`
 - [ ] `ai_tasks`、`task_artifacts`
-- [ ] `agents` 扩展字段：`kind`、`input_schema_json`、`output_schema_json`、`visibility`、`enterprise_id`
-- [ ] 现有表加可空列：`invoke_records.enterprise_id`、`scenario_run_id`；`model_call_logs.enterprise_id`、`scenario_run_id`、`task_id`；`audit_events.enterprise_id`、`scenario_run_id`
+- [ ] `agents` 扩展字段：`kind`、`input_schema_json`、`output_schema_json`、`icon`、`sort`
+- [ ] 现有表加可空列：`invoke_records.scenario_run_id`；`model_call_logs.scenario_run_id`、`task_id`；`audit_events.scenario_run_id`
 
 ### 1.2 计费
 
-- [ ] `BillingService`：`hold` / `capture` / `release` / `snapshot` / `grant`
+- [ ] 复用 `WalletService`：run 级 holdKey=`scenario:{runId}`；不新建计费表/服务
 - [ ] 场景运行开始前按预估积分 hold，成功后 capture，失败/取消 release
 - [ ] 每个步骤调 `InvokeService` / 模型时传 `billingContext`，标记 deferred：只记录本步成本，不单独 hold/capture
 - [ ] run 成功后按步骤成本合计 capture 一次；失败/取消 release 全部，不扣费
 - [ ] 账本 `biz_type=scenario`、`biz_id=run_id`；`(biz_type,biz_id)` 唯一防重复
-- [ ] 禁止同一笔同时写企业账本和个人账本
+- [ ] 禁止同一笔既走场景 capture 又走工具 capture
 - [ ] 场景本身不加价，按步骤实际调用/模型成本累加
-- [ ] 企业余额不足：运行前阻断，返回 `INSUFFICIENT_CREDITS`，不建运行记录或标记 failed
+- [ ] 用户余额不足：运行前阻断，返回 `INSUFFICIENT_CREDITS`，不建运行记录或标记 failed
 
 ### 1.3 运行引擎
 
@@ -103,7 +102,7 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 ### 1.6 管理端
 
 - [ ] 场景列表：状态、步骤数、依赖数据源、发布/下架
-- [ ] 运行记录：企业、用户、场景、状态、积分、耗时
+- [ ] 运行记录：用户、场景、状态、积分、耗时
 - [ ] 数据源：海关/采购商/邮件状态为 pending，负责人/备注
 - [ ] 专家列表：把“助手”文案改为“专家”（先只改文案和导航）
 
@@ -111,8 +110,8 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 
 - [ ] 每个步骤写 `scenario_run_steps`，关联 `invoke_id` / `model_call_id`
 - [ ] `invoke_records` / `model_call_logs` / `audit_events` 带 `scenario_run_id`
-- [ ] 企业隔离：所有查询带 `enterprise_id`；平台运营代查只读
-- [ ] 运行产物写 `task_artifacts` + MinIO，按企业/任务隔离
+- [ ] 用户隔离：所有查询带 `user_id`；平台运营代查只读
+- [ ] 运行产物写 `task_artifacts` + MinIO，按用户/任务隔离
 
 ---
 
@@ -157,7 +156,7 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 - [ ] 利润数字与 `profit-estimator` 一致
 - [ ] PDF 可下载、中文不乱码
 - [ ] 选品工具失败时整次 failed、hold 释放、不扣费，不降级到演示数据
-- [ ] 企业 A 看不到企业 B 的运行和产物
+- [ ] 用户 A 看不到用户 B 的运行和产物
 
 ---
 
@@ -227,32 +226,32 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 - [ ] 商标步骤成功时结果进入报告；失败时报告注明“商标检索未完成”
 - [ ] 报告含风险项、建议、免责声明
 - [ ] 不扣未成功步骤的积分
-- [ ] 企业隔离/审计同上
+- [ ] 用户隔离/审计同上
 
 ---
 
 ## 5. 开工顺序
 
-1. **数据模型 + 迁移**（企业、积分账户、场景、任务、产物、审计列）。
-2. **BillingService**（企业账户、hold/capture/release、账本）。
+1. **数据模型 + 迁移**（场景、任务、产物、审计列；复用现有钱包，不建企业表）。
+2. **钱包复用 + deferred 计费**（run 级 hold/capture/release，复用 `WalletService`）。
 3. **场景/任务运行引擎**（定义、步骤、状态、错误、重试边界）。
 4. **3 个场景定义**（代码/种子；先跑 mock 工具）。
 5. **API**（运行、查询、取消、任务、产物）。
 6. **前端**（场景卡片、3 个专属表单、运行详情、任务列表）。
 7. **管理端最小版**（场景发布、运行记录、数据源状态、专家文案）。
-8. **联调与演示**（样例数据、失败路径、企业隔离、审计链路）。
+8. **联调与演示**（样例数据、失败路径、用户隔离、审计链路）。
 
 ---
 
 ## 6. Definition of Done
 
-- [ ] 一个演示企业、两个员工账号（管理员/成员）。
+- [ ] 两个演示用户（用户即企业），用于隔离测试。
 - [ ] 3 个场景 published，均有专属表单。
 - [ ] 3 个场景各跑成功 1 次，报告 PDF 可下载。
 - [ ] 失败路径：任一步失败 → run failed → hold released → 不扣费。
-- [ ] 积分：企业账户扣减、员工发起人记录、账本可查。
+- [ ] 积分：个人钱包扣减，流水可查。
 - [ ] 审计：run → steps → invoke/model → ledger/audit 可串联。
-- [ ] 隔离：企业 A 无法看到企业 B 的任务/产物/账单。
+- [ ] 隔离：用户 A 无法看到用户 B 的任务/产物/账单。
 - [ ] 管理端能发布/下架场景，能看运行记录。
 - [ ] 不依赖格兰德、阿里云邮件、知识库。
 
