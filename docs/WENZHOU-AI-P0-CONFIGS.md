@@ -76,7 +76,7 @@ acceptance     验收样例
 | 平台费率 | number | 否 | 15 | % | `profit-estimator.fee_rate` |
 | 头程/配送 | number | 否 | 0 | 元 | `profit-estimator.shipping` |
 | 广告占比 | number | 否 | 10 | % | `profit-estimator.ads` |
-| 展示条数 | integer | 否 | 5 | 1–20 | `lf-sellersprite-product-search.size` |
+| 展示条数 | integer | 否 | 10 | 10–100（上游限制） | `lf-sellersprite-product-search.size` |
 | Listing 文案 | textarea | 否 | — | 填了才做合规初筛 | `compliance-check.text` |
 
 站点映射：
@@ -102,7 +102,7 @@ acceptance     验收样例
 
 ```
 1. 结论：继续 / 观察 / 放弃（三选一）
-2. 市场样本：前 N 条，标题、价格、月销量、BSR、评分、卖家、ASIN
+2. 市场样本：`products[]` 前 N 条，标题、价格、月销量、BSR、评分、卖家、ASIN
 3. 利润：售价、货本、平台费、头程、广告、毛利、毛利率、ROI、结论
 4. 季节：12 个月建议动作
 5. 合规：命中词、风险等级、建议
@@ -131,7 +131,7 @@ acceptance     验收样例
 平台费率：15
 头程：12
 广告：10
-展示条数：5
+展示条数：10
 Listing 文案：含 "100% waterproof" 的一段
 ```
 
@@ -176,7 +176,7 @@ Listing 文案：含 "100% waterproof" 的一段
 | # | 类型 | 工具/模型 | 输入 | 条件 | 失败处理 |
 |---|---|---|---|---|---|
 | 1 | tool | `lf-amazon-search` | `keyword, amazonDomain=amazon.com, page=1, sort=relevanceblender` | 必做 | 失败 → 运行 `blocked`，不扣费 |
-| 2 | transform | 取标题 | 从实际返回中取 `items[].title`/`products[].title`，截取 N 条 | 必做 | 无标题 → `blocked` |
+| 2 | transform | 取标题 | 从实际返回 `products[].title` 截取 N 条（已实测 `lf-amazon-search` 返回 `products` 数组） | 必做 | 无标题 → `blocked` |
 | 3 | tool | `competitor-insight` | `titles, market` | 必做 | 失败 → 整次 `failed` |
 | 4 | model | 报告生成 | 步骤 1–3 结果 JSON | 必做 | 失败 → 模板报告，run 仍 succeeded |
 
@@ -322,8 +322,12 @@ Listing 文案：100% waterproof, best seller, cure your night, guaranteed quali
 
 ### 剩余风险
 
-- **LinkFox 密钥（当前阻塞）**：2026-11-09 实测 API 容器里 `LINKFOX_API_KEY` 为空，`lf-sellersprite-product-search` 和 `lf-amazon-search` 都返回 `CONNECTOR_UNAVAILABLE 上游能力未配置密钥`。重建 api 容器后，原容器的环境变量没有保留。需要把密钥补进 `.env` 并重启 api，才能验收真实数据路径；额度尚未验证。
-- **LinkFox 额度**：密钥补齐后仍可能遇到额度/鉴权失败；失败时 blocked/failed，不降级到演示数据。
+- **LinkFox 密钥（已解决）**：2026-11-09 把密钥补进 `.env` 后重启 api，实测：
+  - `lf-sellersprite-product-search`：200，`products[]` 10 条，字段含标题/价格/月销量/BSR/评分/卖家/ASIN；`size` 必须 10–100。
+  - `lf-amazon-search`：200，`products[]` 60 条，字段含标题/价格/评分/ASIN/图片；`products[].title` 可直接用于竞品词频。
+  - 密钥只放 `.env`，不要入库、不要提交。
+- **LinkFox 额度**：当前可用，但额度/鉴权仍可能失败；失败时 blocked/failed，不降级到演示数据。
+- **模型密钥（待补）**：当前 `LLM_API_KEY` / `XY_API_KEY` 为空，报告生成会走 mock。需要把 xytoken 密钥补进 `.env`，否则 P0 报告不是真实模型输出。
 - **字段映射**：两个 LinkFox 工具返回结构以实际为准，适配层需要按真实响应做映射。
 - **PDF 渲染**：需要中文字体、分页、表格样式；首批先保证不乱码、可下载。
 - **数据时效**：LinkFox 数据可能滞后，报告必须标注查询时间和“仅供参考”。

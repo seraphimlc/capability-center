@@ -390,7 +390,8 @@ Listing 合规检查（compliance-check）
 
 1. **格兰德数据**：API 还是数据文件？字段、更新频率、覆盖国家、数据量、合同授权。
 2. **阿里云邮件**：还没申请；需要发件域名、模板、退订、速率限制。
-3. **LinkFox 密钥（当前缺失）**：选品主路径依赖 `lf-sellersprite-product-search`，竞品主路径依赖 `lf-amazon-search`；当前 API 容器 `LINKFOX_API_KEY` 为空，实测两个工具都返回 503 `上游能力未配置密钥`。需要补 `.env` 后重启 api，再验证额度。
+3. **LinkFox 密钥（已配置）**：选品用 `lf-sellersprite-product-search`、竞品用 `lf-amazon-search`，2026-11-09 实测均 200；`size` 需 10–100，`lf-amazon-search` 返回 `products[]`。密钥只放 `.env`。
+4. **模型密钥（待补）**：`LLM_API_KEY` / `XY_API_KEY` 当前为空，报告会走 mock；需要补 xytoken 密钥。
 4. **商标额度**：创知汇当前工具额度已耗尽，需充值或换账号。
 5. **店铺授权**：竞品场景的绑店步骤需要企业真实店铺；没有时先跳过。
 
