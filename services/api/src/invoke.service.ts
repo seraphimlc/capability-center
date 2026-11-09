@@ -16,6 +16,7 @@ import {
   whitelabelValue,
 } from './domain';
 import { linkfoxCall } from './linkfox.client';
+import { McpService } from './mcp.service';
 import { StoreService } from './store.service';
 
 @Injectable()
@@ -28,6 +29,7 @@ export class InvokeService {
     private readonly audit: AuditService,
     private readonly notify: NotifyService,
     private readonly stores: StoreService,
+    private readonly mcp: McpService,
   ) {}
 
   async create(input: {
@@ -285,6 +287,18 @@ export class InvokeService {
       } finally {
         clearTimeout(timer);
       }
+    }
+    if (connector.type === 'mcp') {
+      // Only forward declared parameters; never leak internal store fields upstream.
+      const props = (tool.schemaJson as JsonSchema)?.properties ?? {};
+      const payload: Record<string, unknown> = {};
+      for (const [key, value] of Object.entries(input)) {
+        if (key.startsWith('__') || key === 'simulate' || key === 'store_id' || key === 'platform') continue;
+        if (!(key in props)) continue;
+        if (value === '' || value === null || value === undefined) continue;
+        payload[key] = value;
+      }
+      return this.mcp.call(connector.id, tool.upstreamOp, payload);
     }
     if (connector.type === 'linkfox') {
       const op = (tool.upstreamOp || '').trim();

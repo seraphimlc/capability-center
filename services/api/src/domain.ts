@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'crypto';
 
-const BRAND = [/link\s*fox/gi, /紫讯/g, /xyb2b/gi, /xytoken/gi, /api\.xytoken\S*/gi, /Wally\s*Smarter/gi, /\bTsearch\b/gi, /skill\.linkfox\S*/gi, /来源技能/g];
+const BRAND = [/link\s*fox/gi, /紫讯/g, /xyb2b/gi, /xytoken/gi, /api\.xytoken\S*/gi, /Wally\s*Smarter/gi, /\bTsearch\b/gi, /skill\.linkfox\S*/gi, /来源技能/g, /创知汇/g, /ipunique(?:\.com)?/gi];
 
 export function whitelabelText(input: string): string {
   let out = input;
@@ -18,7 +18,7 @@ export function containsBannedBrand(input: string): boolean {
   });
 }
 
-const BANNED_KEY = /linkfox|紫讯|xyb2b|xytoken|upstream_model/i;
+const BANNED_KEY = /linkfox|紫讯|xyb2b|xytoken|upstream_model|ipunique|chuangzhihui/i;
 
 export function whitelabelValue(value: unknown): unknown {
   if (typeof value === 'string') return whitelabelText(value);

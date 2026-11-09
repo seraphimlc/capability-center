@@ -12,4 +12,5 @@ until pnpm exec prisma db push --skip-generate --accept-data-loss; do
   sleep 2
 done
 node dist/seed.js
+node dist/scripts/import-trademark-tools.js || true
 exec node dist/main.js

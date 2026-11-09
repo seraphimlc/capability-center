@@ -76,6 +76,26 @@ Docker Desktop for Mac 上，容器直连网关可能 TLS 握手失败（OpenSSL
 
 用户界面只显示白标档名（标准对话、深度推理等）。上游模型 ID 只在管理端模型页出现。
 
+## 温州 AI（feature 分支）
+
+温州项目的 AI 场景、专家、数据模型和第一批开工清单在 `feature/wenzhou-ai-workbench` 分支上整理：
+
+- [交接说明](docs/WENZHOU-AI-HANDOFF.md)
+- [场景与能力地图](docs/WENZHOU-AI-SCENARIO-MAP.md)
+- [最小数据模型草案](docs/WENZHOU-AI-DATA-MODEL.md)
+- [第一批开工 Checklist](docs/WENZHOU-AI-PHASE1-CHECKLIST.md)
+
+## 商标能力（试点）
+
+合规风控下有 3 个商标初筛能力：近似商标检索、美国商标详情、尼斯分类查询。数据来自远程 MCP，走平台级 OAuth 账号，接入细节见 [docs/TRADEMARK.md](docs/TRADEMARK.md)。
+
+```bash
+# 授权后把 token 写进 .env（不要提交），再重启 api
+docker compose up -d api
+# 改了名称/schema/标价后重跑导入
+docker compose exec api node dist/scripts/import-trademark-tools.js
+```
+
 ## 对象存储
 
 默认 `OSS_PROVIDER=minio`，Compose 已带 MinIO，无需阿里云密钥。
