@@ -17,6 +17,7 @@ import { CatalogController } from './catalog.controller';
 import { AdminController } from './admin.controller';
 import { AgentController, FileController, HealthController, InvokeController, OpenController, StoreController } from './surface.controller';
 import { StoreService } from './store.service';
+import { McpService } from './mcp.service';
 
 @Module({
   controllers: [
@@ -44,6 +45,7 @@ import { StoreService } from './store.service';
     ModelService,
     AgentService,
     StoreService,
+    McpService,
     { provide: APP_GUARD, useClass: AuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
     { provide: APP_GUARD, useClass: ImpersonateGuard },

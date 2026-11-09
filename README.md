@@ -76,6 +76,17 @@ Docker Desktop for Mac 上，容器直连网关可能 TLS 握手失败（OpenSSL
 
 用户界面只显示白标档名（标准对话、深度推理等）。上游模型 ID 只在管理端模型页出现。
 
+## 商标能力（试点）
+
+合规风控下有 3 个商标初筛能力：近似商标检索、美国商标详情、尼斯分类查询。数据来自远程 MCP，走平台级 OAuth 账号，接入细节见 [docs/TRADEMARK.md](docs/TRADEMARK.md)。
+
+```bash
+# 授权后把 token 写进 .env（不要提交），再重启 api
+docker compose up -d api
+# 改了名称/schema/标价后重跑导入
+docker compose exec api node dist/scripts/import-trademark-tools.js
+```
+
 ## 对象存储
 
 默认 `OSS_PROVIDER=minio`，Compose 已带 MinIO，无需阿里云密钥。

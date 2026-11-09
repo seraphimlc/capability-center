@@ -312,6 +312,7 @@ export class AdminController {
     const row = await this.prisma.connector.findUnique({ where: { id } });
     if (!row) throw new ApiException('NOT_FOUND');
     if (row.type === 'builtin' || row.type === 'linkfox') return { ok: true, message: '演示探活通过，未连接真实外部供应商' };
+    if (row.type === 'mcp') return { ok: true, message: 'MCP 连接器，调用时校验授权与上游可用性' };
     const cfg = JSON.parse(row.configEnc || '{}') as { baseUrl?: string };
     if (!cfg.baseUrl) throw new ApiException('CONNECTOR_UNAVAILABLE');
     const response = await fetch(cfg.baseUrl, { method: 'GET' }).catch(() => null);
@@ -722,7 +723,9 @@ function mask(value: string): string {
 function maskConfig(raw: string) {
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (typeof parsed.token === 'string') parsed.token = '***';
+    for (const key of ['token', 'accessToken', 'refreshToken', 'clientSecret', 'apiKey', 'secret', 'password']) {
+      if (typeof parsed[key] === 'string') parsed[key] = '***';
+    }
     return parsed;
   } catch {
     return {};

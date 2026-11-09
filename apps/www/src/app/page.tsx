@@ -4,6 +4,8 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { InvokeDrawer } from '../components/invoke-drawer';
 import { api } from '../lib/api';
+import { hasToolForm } from '../tools/registry';
+import { ToolRunner } from '../tools/runner';
 
 type Tool = {
   key: string;
@@ -294,18 +296,28 @@ export default function CatalogPage() {
       ) : null}
 
       {drawer ? (
-        <InvokeDrawer
-          toolKey={drawer.key}
-          name={drawer.name}
-          price={drawer.pricing_credits}
-          summary={drawer.summary}
-          storeBound={Boolean(drawer.store_bound)}
-          schema={drawer.schema as { required?: string[]; properties?: Record<string, { type?: string; title?: string; enum?: string[]; format?: string; 'x-file'?: boolean; default?: unknown; description?: string }>; 'x-fill-status'?: string }}
-          onClose={() => {
-            setDrawer(null);
-            void load(page, q);
-          }}
-        />
+        hasToolForm(drawer.key) ? (
+          <ToolRunner
+            toolKey={drawer.key}
+            onClose={() => {
+              setDrawer(null);
+              void load(page, q);
+            }}
+          />
+        ) : (
+          <InvokeDrawer
+            toolKey={drawer.key}
+            name={drawer.name}
+            price={drawer.pricing_credits}
+            summary={drawer.summary}
+            storeBound={Boolean(drawer.store_bound)}
+            schema={drawer.schema as { required?: string[]; properties?: Record<string, { type?: string; title?: string; enum?: string[]; format?: string; 'x-file'?: boolean; default?: unknown; description?: string }>; 'x-fill-status'?: string }}
+            onClose={() => {
+              setDrawer(null);
+              void load(page, q);
+            }}
+          />
+        )
       ) : null}
     </div>
   );
