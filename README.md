@@ -80,6 +80,7 @@ Docker Desktop for Mac 上，容器直连网关可能 TLS 握手失败（OpenSSL
 
 温州项目的 AI 场景、专家、数据模型和第一批开工清单在 `feature/wenzhou-ai-workbench` 分支上整理：
 
+- [交接说明](docs/WENZHOU-AI-HANDOFF.md)
 - [场景与能力地图](docs/WENZHOU-AI-SCENARIO-MAP.md)
 - [最小数据模型草案](docs/WENZHOU-AI-DATA-MODEL.md)
 - [第一批开工 Checklist](docs/WENZHOU-AI-PHASE1-CHECKLIST.md)

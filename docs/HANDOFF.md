@@ -2,6 +2,8 @@
 
 更新时间：2026-11-08（Asia/Shanghai）。这是下一位接手的入口。
 
+> 温州项目的 AI 分支交接见 [`docs/WENZHOU-AI-HANDOFF.md`](WENZHOU-AI-HANDOFF.md)（分支 `feature/wenzhou-ai-workbench`）。
+
 ## 0. 下一位先看这里
 
 ### 本轮已经做完
