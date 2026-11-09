@@ -265,7 +265,7 @@ PUT    /api/admin/ai/data-sources/:id     # 状态、负责人、备注
 | LinkFox 密钥/额度 | **已配置并验证**（sellersprite 200 / amazon-search 200） | 选品/竞品主路径依赖这两个工具；失败时 failed/blocked，不降级到演示数据；密钥只在 `.env` |
 | 商标上游额度 | 已耗尽 | 合规场景商标步骤设为可选 |
 | 店铺授权 | 只有演示店铺 | P0 三个工作流都不依赖绑店工具，第一批不需要 |
-| 模型 xytoken | **当前密钥为空** | 报告生成会走 mock；需要把 `LLM_API_KEY`/`XY_API_KEY` 补进 `.env` |
+| 模型 xytoken | **已配置并验证**（xy / deepseek-v4.1-flash） | 报告生成走真实模型；失败时模板兜底 |
 | 格兰德数据 | Pending | 第一批不用 |
 | 阿里云邮件 | 未申请 | 第一批不用 |
 | 知识库 | 未建 | 合规报告先用固定规则+模型 |

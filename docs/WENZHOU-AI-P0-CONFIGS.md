@@ -327,7 +327,7 @@ Listing 文案：100% waterproof, best seller, cure your night, guaranteed quali
   - `lf-amazon-search`：200，`products[]` 60 条，字段含标题/价格/评分/ASIN/图片；`products[].title` 可直接用于竞品词频。
   - 密钥只放 `.env`，不要入库、不要提交。
 - **LinkFox 额度**：当前可用，但额度/鉴权仍可能失败；失败时 blocked/failed，不降级到演示数据。
-- **模型密钥（待补）**：当前 `LLM_API_KEY` / `XY_API_KEY` 为空，报告生成会走 mock。需要把 xytoken 密钥补进 `.env`，否则 P0 报告不是真实模型输出。
+- **模型密钥（已配置并验证）**：`LLM_API_KEY` 已配置，`LLM_PROVIDER=xy`、`LLM_BASE_URL=https://api.xytoken.xyb2b.com/v1`、`LLM_MODEL=deepseek-v4.1-flash`；模型测试返回 provider=xy、文本“模型就绪”、约 2.4 秒。密钥只在 `.env`。
 - **字段映射**：两个 LinkFox 工具返回结构以实际为准，适配层需要按真实响应做映射。
 - **PDF 渲染**：需要中文字体、分页、表格样式；首批先保证不乱码、可下载。
 - **数据时效**：LinkFox 数据可能滞后，报告必须标注查询时间和“仅供参考”。
