@@ -85,6 +85,10 @@ Docker Desktop for Mac 上，容器直连网关可能 TLS 握手失败（OpenSSL
 - [最小数据模型草案](docs/WENZHOU-AI-DATA-MODEL.md)
 - [第一批开工 Checklist](docs/WENZHOU-AI-PHASE1-CHECKLIST.md)
 
+## AI 工作台 Backlog
+
+102 个基础功能 + 79 条扩展的整合 backlog，见 [AI 工作台功能 Backlog](docs/AI-WORKBENCH-BACKLOG.md)。这是内部产品/研发 backlog，不是客户报价。
+
 ## 商标能力（试点）
 
 合规风控下有 3 个商标初筛能力：近似商标检索、美国商标详情、尼斯分类查询。数据来自远程 MCP，走平台级 OAuth 账号，接入细节见 [docs/TRADEMARK.md](docs/TRADEMARK.md)。
