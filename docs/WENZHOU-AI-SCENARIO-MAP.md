@@ -279,6 +279,8 @@ apps/www/src/app/ai/
 
 第一批只做 3 个场景：**选品、竞品、合规初筛**。它们不依赖格兰德数据、阿里云邮件和知识库，能先把“专家 → 场景 → 任务 → 企业计费 → 审计 → 产物”跑通。
 
+具体输入、步骤、报告结构、验收样例见 [P0 三个工作流的配置草案](WENZHOU-AI-P0-CONFIGS.md)。
+
 ### 8.1 选品决策（P0）
 
 流程：
@@ -393,6 +395,7 @@ Listing 合规检查（compliance-check）
 
 ## 12. 配套文档
 
+- [P0 三个工作流的配置草案](WENZHOU-AI-P0-CONFIGS.md)
 - [最小数据模型草案](WENZHOU-AI-DATA-MODEL.md)
 - [第一批开工 Checklist](WENZHOU-AI-PHASE1-CHECKLIST.md)
 - [报价表 AI 部分分析](WENZHOU-AI-QUOTE-ANALYSIS.md)
