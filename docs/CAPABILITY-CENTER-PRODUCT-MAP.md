@@ -74,6 +74,8 @@
 
 ## 5. 补充顺序
 
+> P0 的模块边界、API、页面、状态机、验收标准见 [AI 工作台 P0 产品方案](AI-WORKBENCH-P0-PRODUCT-PLAN.md)。
+
 ### P0：先把 AI 工作台跑起来
 
 - 统一任务中心（生命周期、状态、产物、重试、成本）
@@ -118,6 +120,7 @@
 
 ## 7. 相关文件
 
+- [AI 工作台 P0 产品方案](AI-WORKBENCH-P0-PRODUCT-PLAN.md)
 - [AI 工作台 Backlog](AI-WORKBENCH-BACKLOG.md)
 - [场景与能力地图](WENZHOU-AI-SCENARIO-MAP.md)
 - [数据模型](WENZHOU-AI-DATA-MODEL.md)
